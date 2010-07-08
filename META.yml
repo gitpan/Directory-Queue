@@ -1,13 +1,27 @@
-# http://module-build.sourceforge.net/META-spec.html
-#XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
-name:         Directory-Queue
-version:      0.5
-version_from: 
-installdirs:  site
+--- #YAML:1.0
+name:               Directory-Queue
+version:            0.6
+abstract:           object oriented interface to a directory based queue
+author:
+    - Lionel Cons <lionel.cons@cern.ch>
+license:            perl
+distribution_type:  module
+configure_requires:
+    ExtUtils::MakeMaker:  0
+build_requires:
+    ExtUtils::MakeMaker:  0
 requires:
-    POSIX:                         0
-    Test::More:                    0
-    Time::HiRes:                   0
-
-distribution_type: module
-generated_by: ExtUtils::MakeMaker version 6.17
+    Encode:       0
+    File::Temp:   0
+    POSIX:        0
+    Test::More:   0
+    Time::HiRes:  0
+    UNIVERSAL:    0
+no_index:
+    directory:
+        - t
+        - inc
+generated_by:       ExtUtils::MakeMaker version 6.55_02
+meta-spec:
+    url:      http://module-build.sourceforge.net/META-spec-v1.4.html
+    version:  1.4

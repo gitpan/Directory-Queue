@@ -1,4 +1,8 @@
 Revision history for Directory-Queue
 
+0.6	Thu Jul  8 2010
+	* Ported to Windows (needs more testing).
+	* Improved packaging and testing.
+
 0.5	Mon Jun 21 2010
 	* First version released in CPAN.

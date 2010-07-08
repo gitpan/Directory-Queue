@@ -13,7 +13,7 @@
 package Directory::Queue;
 use strict;
 use warnings;
-our $VERSION = sprintf("%d.%02d", q$Revision: 1.16 $ =~ /(\d+)\.(\d+)/);
+our $VERSION = sprintf("%d.%02d", q$Revision: 1.19 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
@@ -253,9 +253,11 @@ sub _subdirs ($) {
     unless (@stat) {
 	_fatal("cannot lstat(%s): %s", $path, $!) unless $! == ENOENT;
 	# RACE: this path does not exist (anymore)
-	return(0);
+	return();
     }
-    return($stat[ST_NLINK] - 2);
+    return($stat[ST_NLINK] - 2) unless $^O =~ /^(dos|MSWin32)$/;
+    # argh! we cannot rely on the number of links on Windows :-(
+    return(scalar(_directory_contents($path, 1)));
 }
 
 #
@@ -407,9 +409,15 @@ sub new : method {
 	_special_mkdir($path, $self->{umask}) unless -d $path;
     }
     # store the queue unique identifier
-    @stat = stat($self->{path});
-    _fatal("cannot stat(%s): %s", $self->{path}, $!) unless @stat;
-    $self->{id} = $stat[ST_DEV] . ":" . $stat[ST_INO];
+    if ($^O =~ /^(dos|MSWin32)$/) {
+	# we cannot rely on inode number :-(
+	$self->{id} = $self->{path};
+    } else {
+	# device number plus inode number should be unique
+	@stat = stat($self->{path});
+	_fatal("cannot stat(%s): %s", $self->{path}, $!) unless @stat;
+	$self->{id} = $stat[ST_DEV] . ":" . $stat[ST_INO];
+    }
     # so far so good...
     return($self);
 }
@@ -907,16 +915,13 @@ Directory::Queue - object oriented interface to a directory based queue
   #
 
   $dirq = Directory::Queue->new(path => $queuedir, schema => $schema);
-  $name = $dirq->first();
-  while ($name) {
+  for ($name = $dirq->first(); $name; $name = $dirq->next()) {
       next unless $dirq->lock($name);
       printf("# reading element %s\n", $name);
       %data = $dirq->get($name);
       # one can use $data{body} and $data{header} here...
       # one could use $dirq->unlock($name) to only browse the queue...
       $dirq->remove($name);
-  } continue {
-      $name = $dirq->next();
   }
 
 =head1 DESCRIPTION
