@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:               Directory-Queue
-version:            0.6
+version:            1.0
 abstract:           object oriented interface to a directory based queue
 author:
     - Lionel Cons <lionel.cons@cern.ch>

@@ -7,7 +7,7 @@ my(%param, $emv, $name);
 %param = (
     NAME                => 'Directory::Queue',
     AUTHOR              => 'Lionel Cons <lionel.cons@cern.ch>',
-    VERSION             => '0.6',
+    VERSION             => '1.0',
     ABSTRACT_FROM       => 'lib/Directory/Queue.pm',
     LICENSE             => 'perl',
     PL_FILES            => {},

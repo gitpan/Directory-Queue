@@ -1,12 +1,11 @@
 Changes
+MANIFEST			This list of files
+META.yml			Module meta-data (added by MakeMaker)
+Makefile.PL
+README
 lib/Directory/Queue.pm
 lib/Directory/Queue/Set.pm
-Makefile.PL
-MANIFEST
-META.yml			Module meta-data (added by MakeMaker)
-README
-t/load.t
-t/main.t
-t/pod-coverage.t
-t/pod.t
-t/set.t
+t/1main.t
+t/2set.t
+t/3pod.t
+t/4podcov.t

@@ -13,7 +13,7 @@
 package Directory::Queue;
 use strict;
 use warnings;
-our $VERSION = sprintf("%d.%02d", q$Revision: 1.19 $ =~ /(\d+)\.(\d+)/);
+our $VERSION = sprintf("%d.%02d", q$Revision: 1.20 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
@@ -255,7 +255,7 @@ sub _subdirs ($) {
 	# RACE: this path does not exist (anymore)
 	return();
     }
-    return($stat[ST_NLINK] - 2) unless $^O =~ /^(dos|MSWin32)$/;
+    return($stat[ST_NLINK] - 2) unless $^O =~ /^(cygwin|dos|MSWin32)$/;
     # argh! we cannot rely on the number of links on Windows :-(
     return(scalar(_directory_contents($path, 1)));
 }
@@ -409,7 +409,7 @@ sub new : method {
 	_special_mkdir($path, $self->{umask}) unless -d $path;
     }
     # store the queue unique identifier
-    if ($^O =~ /^(dos|MSWin32)$/) {
+    if ($^O =~ /^(cygwin|dos|MSWin32)$/) {
 	# we cannot rely on inode number :-(
 	$self->{id} = $self->{path};
     } else {
