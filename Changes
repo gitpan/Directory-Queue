@@ -1,5 +1,9 @@
 Revision history for Directory-Queue
 
+1.1	Mon May  2 2011
+	* The purge() method is now more flexible.
+	* Ported to systems that may return EEXIST instead of ENOTEMPTY.
+
 1.0	Fri Aug 13 2010
 	* Promoted to 1.0 after successful testing.
 

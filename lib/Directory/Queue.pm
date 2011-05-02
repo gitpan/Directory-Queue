@@ -13,7 +13,7 @@
 package Directory::Queue;
 use strict;
 use warnings;
-our $VERSION = sprintf("%d.%02d", q$Revision: 1.20 $ =~ /(\d+)\.(\d+)/);
+our $VERSION = sprintf("%d.%02d", q$Revision: 1.25 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
@@ -46,6 +46,9 @@ use constant STATE_UNLOCKED => "U";
 use constant STATE_LOCKED   => "L";
 use constant STATE_MISSING  => "M";
 
+# reasonable buffer size for file I/O operations
+use constant SYSBUFSIZE => 8192;
+
 #
 # global variables
 #
@@ -53,12 +56,14 @@ use constant STATE_MISSING  => "M";
 our(
     $_DirectoryRegexp,    # regexp matching an intermediate directory
     $_ElementRegexp,      # regexp matching an element
+    $_FileRegexp,	  # regexp matching a file in an element directory
     %_Byte2Esc,           # byte to escape map
     %_Esc2Byte,           # escape to byte map
 );
 
 $_DirectoryRegexp = qr/[0-9a-f]{8}/;
 $_ElementRegexp   = qr/[0-9a-f]{14}/;
+$_FileRegexp      = qr/[0-9a-zA-Z]+/;
 
 %_Byte2Esc = ("\x5c" => "\\\\", "\x09" => "\\t", "\x0a" => "\\n");
 %_Esc2Byte = reverse(%_Byte2Esc);
@@ -102,7 +107,7 @@ sub _file_read ($$) {
     $contents = "";
     $done = -1;
     while ($done) {
-	$done = sysread($fh, $contents, 8192, length($contents));
+	$done = sysread($fh, $contents, SYSBUFSIZE, length($contents));
 	_fatal("cannot sysread(%s): %s", $path, $!) unless defined($done);
     }
     close($fh) or _fatal("cannot close(%s): %s", $path, $!);
@@ -135,7 +140,7 @@ sub _file_write ($$$$) {
     $length = length($contents);
     $offset = 0;
     while ($length) {
-	$done = syswrite($fh, $contents, 8192, $offset);
+	$done = syswrite($fh, $contents, SYSBUFSIZE, $offset);
 	_fatal("cannot syswrite(%s): %s", $path, $!) unless defined($done);
 	$length -= $done;
 	$offset += $done;
@@ -382,7 +387,7 @@ sub new : method {
 	    unless ref($option{schema}) eq "HASH";
 	foreach $name (keys(%{ $option{schema} })) {
 	    _fatal("invalid schema name: %s", $name)
-		unless $name =~ /^\w+$/ and $name ne LOCKED_DIRECTORY;
+		unless $name =~ /^($_FileRegexp)$/ and $name ne LOCKED_DIRECTORY;
 	    _fatal("invalid schema type: %s", $option{schema}{$name})
 		unless $option{schema}{$name} =~ /^(binary|string|table)(\?)?$/;
 	    $self->{type}{$name} = $1;
@@ -640,14 +645,15 @@ sub remove : method {
     while (1) {
 	$temp = $self->{path} . "/" . OBSOLETE_DIRECTORY . "/" . _new_name();
 	rename($path, $temp) and last;
-	_fatal("cannot rename(%s, %s): %s", $path, $temp, $!) unless $! == ENOTEMPTY;
+	_fatal("cannot rename(%s, %s): %s", $path, $temp, $!)
+	    unless $! == ENOTEMPTY or $! == EEXIST;
 	# RACE: the target directory was already present...
     }
     # remove the data files
     foreach $name (_directory_contents($temp)) {
 	next if $name eq LOCKED_DIRECTORY;
 	_fatal("unexpected file in %s: %s", $temp, $name)
-	    unless $name =~ /^(\w+)$/;
+	    unless $name =~ /^($_FileRegexp)$/;
 	$path = $temp . "/" . $1; # untaint
 	unlink($path) and next;
 	_fatal("cannot unlink(%s): %s", $path, $!);
@@ -657,7 +663,8 @@ sub remove : method {
     while (1) {
 	rmdir($path) or _fatal("cannot rmdir(%s): %s", $path, $!);
 	rmdir($temp) and return;
-	_fatal("cannot rmdir(%s): %s", $temp, $!) unless $! == ENOTEMPTY;
+	_fatal("cannot rmdir(%s): %s", $temp, $!)
+	    unless $! == ENOTEMPTY or $! == EEXIST;
 	# RACE: this can happen if an other process managed to lock this element
 	# while it was being removed so we try again to remove the lock
     }
@@ -797,9 +804,29 @@ sub add : method {
 	$name = $dir . "/" . _new_name();
 	$path = $self->{path} . "/" . $name;
 	rename($temp, $path) and return($name);
-	_fatal("cannot rename(%s, %s): %s", $temp, $path, $!) unless $! == ENOTEMPTY;
+	_fatal("cannot rename(%s, %s): %s", $temp, $path, $!)
+	    unless $! == ENOTEMPTY or $! == EEXIST;
 	# RACE: the target directory was already present...
     }
+}
+
+#
+# return the list of volatile (i.e. temporary or obsolete) directories
+#
+
+sub _volatile : method {
+    my($self) = @_;
+    my(@list, $name);
+
+    foreach $name (_directory_contents($self->{path} . "/" . TEMPORARY_DIRECTORY, 1)) {
+	push(@list, TEMPORARY_DIRECTORY . "/" . $1)
+	    if $name =~ /^($_ElementRegexp)$/o; # untaint
+    }
+    foreach $name (_directory_contents($self->{path} . "/" . OBSOLETE_DIRECTORY, 1)) {
+	push(@list, OBSOLETE_DIRECTORY . "/" . $1)
+	    if $name =~ /^($_ElementRegexp)$/o; # untaint
+    }
+    return(@list);
 }
 
 #
@@ -816,8 +843,8 @@ sub purge : method {
     my(@list, $name, $path, $subdirs, $oldtime, $file, $fpath);
 
     # check options
-    $option{maxtemp} ||= 300;	# maximum time for a temporary element
-    $option{maxlock} ||= 600;	# maximum time for a locked element
+    $option{maxtemp} = 300 unless defined($option{maxtemp});
+    $option{maxlock} = 600 unless defined($option{maxlock});
     foreach $name (keys(%option)) {
 	_fatal("unexpected option: %s", $name)
 	    unless $name =~ /^(maxtemp|maxlock)$/;
@@ -840,42 +867,36 @@ sub purge : method {
 	    _special_rmdir($path);
 	}
     }
-    # get the list of temporary and obsolete directories
-    @list = ();
-    foreach $name (_directory_contents($self->{path} . "/" . TEMPORARY_DIRECTORY, 1)) {
-	push(@list, TEMPORARY_DIRECTORY . "/" . $1)
-	    if $name =~ /^($_ElementRegexp)$/o; # untaint
-    }
-    foreach $name (_directory_contents($self->{path} . "/" . OBSOLETE_DIRECTORY, 1)) {
-	push(@list, OBSOLETE_DIRECTORY . "/" . $1)
-	    if $name =~ /^($_ElementRegexp)$/o; # untaint
-    }
-    # remove the ones which are too old
-    $oldtime = time() - $option{maxtemp};
-    foreach $name (@list) {
-	$path = $self->{path} . "/" . $name;
-	next unless _older($path, $oldtime);
-	warn("* removing too old volatile element: $name\n");
-	foreach $file (_directory_contents($path, 1)) {
-	    next if $file eq LOCKED_DIRECTORY;
-	    $fpath = "$path/$file";
-	    unlink($fpath) and next;
-	    _fatal("cannot unlink(%s): %s", $fpath, $!) unless $! == ENOENT;
+    # remove the volatile directories which are too old
+    if ($option{maxtemp}) {
+	$oldtime = time() - $option{maxtemp};
+	foreach $name ($self->_volatile()) {
+	    $path = $self->{path} . "/" . $name;
+	    next unless _older($path, $oldtime);
+	    warn("* removing too old volatile element: $name\n");
+	    foreach $file (_directory_contents($path, 1)) {
+		next if $file eq LOCKED_DIRECTORY;
+		$fpath = "$path/$file";
+		unlink($fpath) and next;
+		_fatal("cannot unlink(%s): %s", $fpath, $!) unless $! == ENOENT;
+	    }
+	    _special_rmdir($path . "/" . LOCKED_DIRECTORY);
+	    _special_rmdir($path);
 	}
-	_special_rmdir($path . "/" . LOCKED_DIRECTORY);
-	_special_rmdir($path);
     }
     # iterate to find abandoned locked entries
-    $oldtime = time() - $option{maxlock};
-    $name = $self->first();
-    while ($name) {
-	$path = $self->{path} . "/" . $name;
-	next unless $self->_state($name) eq STATE_LOCKED;
-	next unless _older($path, $oldtime);
-	warn("* removing too old locked element: $name\n");
-	$self->unlock($name, 1);
-    } continue {
-	$name = $self->next();
+    if ($option{maxlock}) {
+	$oldtime = time() - $option{maxlock};
+	$name = $self->first();
+	while ($name) {
+	    $path = $self->{path} . "/" . $name;
+	    next unless $self->_state($name) eq STATE_LOCKED;
+	    next unless _older($path, $oldtime);
+	    warn("* removing too old locked element: $name\n");
+	    $self->unlock($name, 1);
+	} continue {
+	    $name = $self->next();
+	}
     }
 }
 
@@ -952,13 +973,13 @@ using the same queue. Consider for instance:
 
 =over
 
-=item . Writer1: calls the add() method
+=item * Writer1: calls the add() method
 
-=item . Writer2: calls the add() method
+=item * Writer2: calls the add() method
 
-=item . Writer2: the add() method returns
+=item * Writer2: the add() method returns
 
-=item . Writer1: the add() method returns
+=item * Writer1: the add() method returns
 
 =back
 
@@ -1128,17 +1149,20 @@ basically the same hash as what add() used; the schema must be known
 
 purge the queue by removing unused intermediate directories, removing
 too old temporary elements and unlocking too old locked elements (aka
-staled locks); OPTIONS can be:
+staled locks); note: this can take a long time on queues with many
+elements; OPTIONS can be:
 
 =over
 
 =item maxtemp
 
-maximum time for a temporary element (in seconds, default 300)
+maximum time for a temporary element (in seconds, default 300);
+if set to 0, temporary elements will not be removed
 
 =item maxlock
 
-maximum time for a locked element (in seconds, default 600)
+maximum time for a locked element (in seconds, default 600);
+if set to 0, locked elements will not be unlocked
 
 =back
 
@@ -1211,4 +1235,4 @@ enough to control who can access the queue.
 
 Lionel Cons L<http://cern.ch/lionel.cons>
 
-Copyright CERN 2010
+Copyright CERN 2010-2011
