@@ -3,6 +3,7 @@ MANIFEST			This list of files
 META.yml			Module meta-data (added by MakeMaker)
 Makefile.PL
 README
+VERSION
 lib/Directory/Queue.pm
 lib/Directory/Queue/Set.pm
 t/1main.t

@@ -13,7 +13,8 @@
 package Directory::Queue;
 use strict;
 use warnings;
-our $VERSION = sprintf("%d.%02d", q$Revision: 1.25 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.1_1";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.30 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
@@ -40,11 +41,6 @@ use constant OBSOLETE_DIRECTORY => "obsolete";
 
 # name of the directory indicating a locked element
 use constant LOCKED_DIRECTORY => "locked";
-
-# states returned by the _state() method
-use constant STATE_UNLOCKED => "U";
-use constant STATE_LOCKED   => "L";
-use constant STATE_MISSING  => "M";
 
 # reasonable buffer size for file I/O operations
 use constant SYSBUFSIZE => 8192;
@@ -93,7 +89,7 @@ sub _fatal ($@) {
 
 sub _file_read ($$) {
     my($path, $utf8) = @_;
-    my($fh, $contents, $done);
+    my($fh, $data, $done);
 
     sysopen($fh, $path, O_RDONLY)
 	or _fatal("cannot sysopen(%s, O_RDONLY): %s", $path, $!);
@@ -104,14 +100,14 @@ sub _file_read ($$) {
 	binmode($fh)
 	    or _fatal("cannot binmode(%s): %s", $path, $!);
     }
-    $contents = "";
+    $data = "";
     $done = -1;
     while ($done) {
-	$done = sysread($fh, $contents, SYSBUFSIZE, length($contents));
+	$done = sysread($fh, $data, SYSBUFSIZE, length($data));
 	_fatal("cannot sysread(%s): %s", $path, $!) unless defined($done);
     }
     close($fh) or _fatal("cannot close(%s): %s", $path, $!);
-    return($contents);
+    return(\$data);
 }
 
 #
@@ -119,7 +115,7 @@ sub _file_read ($$) {
 #
 
 sub _file_write ($$$$) {
-    my($path, $utf8, $umask, $contents) = @_;
+    my($path, $utf8, $umask, $dataref) = @_;
     my($fh, $oldumask, $success, $length, $offset, $done);
 
     if (defined($umask)) {
@@ -129,7 +125,7 @@ sub _file_write ($$$$) {
     } else {
 	$success = sysopen($fh, $path, O_WRONLY|O_CREAT|O_EXCL);
     }
-    $success or _fatal("cannot sysopen(%s, O_WRONLY|O_CREAT|O_EXCL): %s", $path, $!);
+    _fatal("cannot sysopen(%s, O_WRONLY|O_CREAT|O_EXCL): %s", $path, $!) unless $success;
     if ($utf8) {
 	binmode($fh, ":encoding(utf8)")
 	    or _fatal("cannot binmode(%s, :encoding(utf8)): %s", $path, $!);
@@ -137,10 +133,10 @@ sub _file_write ($$$$) {
 	binmode($fh)
 	    or _fatal("cannot binmode(%s): %s", $path, $!);
     }
-    $length = length($contents);
+    $length = length($$dataref);
     $offset = 0;
     while ($length) {
-	$done = syswrite($fh, $contents, SYSBUFSIZE, $offset);
+	$done = syswrite($fh, $$dataref, SYSBUFSIZE, $offset);
 	_fatal("cannot syswrite(%s): %s", $path, $!) unless defined($done);
 	$length -= $done;
 	$offset += $done;
@@ -149,7 +145,7 @@ sub _file_write ($$$$) {
 }
 
 #
-# transform a hash of strings into a string
+# transform a hash of strings into a string (reference)
 #
 # note:
 #  - the keys are sorted so that identical hashes yield to identical strings
@@ -168,21 +164,21 @@ sub _hash2string ($) {
 	$value =~ s/([\x5c\x09\x0a])/$_Byte2Esc{$1}/g;
 	$string .= $key . "\x09" . $value . "\x0a";
     }
-    return($string);
+    return(\$string);
 }
 
 #
-# transform a string into a hash of strings
+# transform a string (reference) into a hash of strings
 #
 # note:
 #  - duplicate keys are not checked (the last one wins)
 #
 
 sub _string2hash ($) {
-    my($string) = @_;
+    my($stringref) = @_;
     my($line, $key, $value, %hash);
 
-    foreach $line (split(/\x0a/, $string)) {
+    foreach $line (split(/\x0a/, $$stringref)) {
 	_fatal("unexpected hash line: %s", $line)
 	    unless $line =~ /^([^\x09\x0a]*)\x09([^\x09\x0a]*)$/o;
 	($key, $value) = ($1, $2);
@@ -244,13 +240,13 @@ sub _older ($$) {
 #  - return undef if the directory does not exist (anymore)
 #  - die in case of any other error
 #
-# note:
-#  - lstat() is used so symlinks are not followed
-#  - this only checks the number of links
-#  - we do not even check that the path indeed points to a directory!
-#
 
-sub _subdirs ($) {
+# stat version (faster):
+#  - lstat() is used so symlinks are not followed
+#  - this only checks the number of hard links
+#  - we do not even check that the given path indeed points to a directory!
+
+sub _subdirs_stat ($) {
     my($path) = @_;
     my(@stat);
 
@@ -260,9 +256,25 @@ sub _subdirs ($) {
 	# RACE: this path does not exist (anymore)
 	return();
     }
-    return($stat[ST_NLINK] - 2) unless $^O =~ /^(cygwin|dos|MSWin32)$/;
-    # argh! we cannot rely on the number of links on Windows :-(
+    return($stat[ST_NLINK] - 2);
+}
+
+# readdir version (slower):
+#  - we really count the number of entries
+#  - we however do not check that these entries are themselves indeed directories
+
+sub _subdirs_readdir ($) {
+    my($path) = @_;
+
     return(scalar(_directory_contents($path, 1)));
+}
+
+# use the right version (we cannot rely on hard links on DOS-like systems)
+
+if ($^O =~ /^(cygwin|dos|MSWin32)$/) {
+    *_subdirs = \&_subdirs_readdir;
+} else {
+    *_subdirs = \&_subdirs_stat;
 }
 
 #
@@ -340,7 +352,7 @@ sub _check_element ($) {
     my($element) = @_;
 
     _fatal("invalid element: %s", $element)
-	unless $element =~ m/^($_DirectoryRegexp)\/($_ElementRegexp)$/o;
+	unless $element =~ m/^(?:$_DirectoryRegexp)\/(?:$_ElementRegexp)$/o;
 }
 
 #+++############################################################################
@@ -355,7 +367,7 @@ sub _check_element ($) {
 
 sub new : method {
     my($class, %option) = @_;
-    my($self, $name, $path, @stat);
+    my($self, $name, $options, $path, @stat);
 
     # default object
     $self = {
@@ -364,12 +376,12 @@ sub new : method {
 	maxelts => 16_000,    # maximum number of elements allowed per directory
     };
     # check options
-    _fatal("missing option: path") unless $option{path};
+    _fatal("missing option: path") unless defined($option{path});
     foreach $name (qw(path umask maxelts)) {
  	next unless defined($option{$name});
+	_fatal("invalid %s: %s", $name, $option{$name})
+	    if ref($option{$name});
 	$self->{$name} = delete($option{$name});
-	_fatal("invalid %s: %s", $name, $self->{$name})
-	    if ref($self->{$name});
     }
     # check umask
     if (defined($self->{umask})) {
@@ -382,16 +394,20 @@ sub new : method {
 	    unless $self->{maxelts} =~ /^\d+$/ and $self->{maxelts} > 0;
     }
     # check schema
-    if ($option{schema}) {
+    if (defined($option{schema})) {
 	_fatal("invalid schema: %s", $option{schema})
 	    unless ref($option{schema}) eq "HASH";
 	foreach $name (keys(%{ $option{schema} })) {
 	    _fatal("invalid schema name: %s", $name)
 		unless $name =~ /^($_FileRegexp)$/ and $name ne LOCKED_DIRECTORY;
 	    _fatal("invalid schema type: %s", $option{schema}{$name})
-		unless $option{schema}{$name} =~ /^(binary|string|table)(\?)?$/;
+		unless $option{schema}{$name} =~ /^(binary|string|table)([\?\*]{0,2})$/;
 	    $self->{type}{$name} = $1;
-	    $self->{mandatory}{$name} = 1 unless $2;
+	    $options = $2;
+	    $self->{mandatory}{$name} = 1 unless $options =~ /\?/;
+	    $self->{ref}{$name} = 1 if $options =~ /\*/;
+	    _fatal("invalid schema type: %s", $option{schema}{$name})
+		if $self->{type}{$name} eq "table" and $self->{ref}{$name};
 	}
 	_fatal("invalid schema: no mandatory data")
 	    unless $self->{mandatory};
@@ -433,6 +449,7 @@ sub new : method {
 # note:
 #  - the main purpose is to copy/clone the iterator cached state
 #  - the other structured attributes (including schema) are not cloned
+#    (this is not a problem as they should not change)
 #
 
 sub copy : method {
@@ -464,24 +481,6 @@ sub id : method {
     my($self) = @_;
 
     return($self->{id});
-}
-
-#
-# return the state of the given element
-#
-# note:
-#  - this is only an indication as the state may be changed by an other process
-#
-
-sub _state : method {
-    my($self, $element) = @_;
-    my($path);
-
-    $path = $self->{path} . "/" . $element;
-    return(STATE_LOCKED)   if -d $path . "/" . LOCKED_DIRECTORY;
-    return(STATE_UNLOCKED) if -d $path;
-    # the element does not exist (anymore)
-    return(STATE_MISSING);
 }
 
 #
@@ -544,6 +543,59 @@ sub count : method {
 }
 
 #
+# check if an element is locked:
+#  - this is best effort only as it may change while we test (only locking is atomic)
+#  - if given a time, only return true on locks older than this time (needed by purge)
+#
+
+# version using nlink (faster)
+
+sub _is_locked_nlink : method {
+    my($self, $name, $time) = @_;
+    my($path, @stat);
+
+    $path = $self->{path} . "/" . $name;
+    @stat = lstat($path);
+    unless (@stat) {
+	_fatal("cannot lstat(%s): %s", $path, $!) unless $! == ENOENT;
+	# RACE: this path does not exist (anymore)
+	return(0);
+    }
+    # locking increases nlink so...
+    return(0) unless $stat[ST_NLINK] > 2;
+    # check age if time is given
+    return(0) if defined($time) and $stat[ST_MTIME] >= $time;
+    # so far so good but we double check that the proper directory does exist
+    return(-d $path . "/" . LOCKED_DIRECTORY);
+}
+
+# version not using nlink (slower)
+
+sub _is_locked_nonlink : method {
+    my($self, $name, $time) = @_;
+    my($path, @stat);
+
+    $path = $self->{path} . "/" . $name;
+    return(0) unless -d $path . "/" . LOCKED_DIRECTORY;
+    return(1) unless defined($time);
+    @stat = lstat($path);
+    unless (@stat) {
+	_fatal("cannot lstat(%s): %s", $path, $!) unless $! == ENOENT;
+	# RACE: this path does not exist (anymore)
+	return(0);
+    }
+    return($stat[ST_MTIME] < $time);
+}
+
+# use the right version (we cannot rely on hard links on DOS-like systems)
+
+if ($^O =~ /^(cygwin|dos|MSWin32)$/) {
+    *_is_locked = \&_is_locked_nonlink;
+} else {
+    *_is_locked = \&_is_locked_nlink;
+}
+
+#
 # lock an element:
 #  - return true on success
 #  - return false in case the element could not be locked (in permissive mode)
@@ -587,7 +639,8 @@ sub lock : method {
     unless (lstat($path)) {
 	if ($permissive) {
 	    # RACE: the element directory does not exist anymore
-	    # (this can happen if an other process locked & removed the element)
+	    # (this can happen if an other process locked & removed the element
+	    #  while our mkdir() was in progress... yes, this can happen!)
 	    return(0) if $! == ENOENT;
 	}
 	# otherwise this is unexpected...
@@ -638,8 +691,7 @@ sub remove : method {
     my($temp, $name, $path);
 
     _check_element($element);
-    _fatal("cannot remove %s: not locked", $element)
-	unless $self->_state($element) eq STATE_LOCKED;
+    _fatal("cannot remove %s: not locked", $element) unless $self->_is_locked($element);
     # move the element out of its intermediate directory
     $path = $self->{path} . "/" . $element;
     while (1) {
@@ -653,7 +705,7 @@ sub remove : method {
     foreach $name (_directory_contents($temp)) {
 	next if $name eq LOCKED_DIRECTORY;
 	_fatal("unexpected file in %s: %s", $temp, $name)
-	    unless $name =~ /^($_FileRegexp)$/;
+	    unless $name =~ /^($_FileRegexp)$/o;
 	$path = $temp . "/" . $1; # untaint
 	unlink($path) and next;
 	_fatal("cannot unlink(%s): %s", $path, $!);
@@ -666,7 +718,8 @@ sub remove : method {
 	_fatal("cannot rmdir(%s): %s", $temp, $!)
 	    unless $! == ENOTEMPTY or $! == EEXIST;
 	# RACE: this can happen if an other process managed to lock this element
-	# while it was being removed so we try again to remove the lock
+	# while it was being removed (see the comment in the lock() method)
+	# so we try to remove the lock again and again...
     }
 }
 
@@ -676,12 +729,11 @@ sub remove : method {
 
 sub get : method {
     my($self, $element) = @_;
-    my(%data, $name, $path);
+    my(%data, $name, $path, $ref);
 
     _fatal("unknown schema") unless $self->{type};
     _check_element($element);
-    _fatal("cannot get %s: not locked", $element)
-	unless $self->_state($element) eq STATE_LOCKED;
+    _fatal("cannot get %s: not locked", $element) unless $self->_is_locked($element);
     foreach $name (keys(%{ $self->{type} })) {
 	$path = "$self->{path}/$element/$name";
 	unless (lstat($path)) {
@@ -692,16 +744,16 @@ sub get : method {
 		next;
 	    }
 	}
-	if ($self->{type}{$name} eq "binary") {
-	    $data{$name} = _file_read($path, 0);
-	} elsif ($self->{type}{$name} eq "string") {
-	    $data{$name} = _file_read($path, 1);
+	if ($self->{type}{$name} =~ /^(binary|string)$/) {
+	    $ref = _file_read($path, $self->{type}{$name} eq "string");
 	} elsif ($self->{type}{$name} eq "table") {
-	    $data{$name} = _string2hash(_file_read($path, 1));
+	    $ref = _string2hash(_file_read($path, 1));
 	} else {
 	    _fatal("unexpected data type: %s", $self->{type}{$name});
 	}
+	$data{$name} = $self->{ref}{$name} ? $ref : $$ref;
     }
+    return(\%data) unless wantarray();
     return(%data);
 }
 
@@ -756,40 +808,48 @@ sub _insertion_directory : method {
 #
 
 sub add : method {
-    my($self, %data) = @_;
-    my($temp, $dir, $name, $path);
+    my($self, @data) = @_;
+    my($data, $temp, $dir, $name, $path, $ref, $utf8);
 
     _fatal("unknown schema") unless $self->{type};
+    if (@data == 1) {
+	$data = $data[0];
+    } else {
+	$data = { @data };
+    }
     while (1) {
 	$temp = $self->{path} . "/" . TEMPORARY_DIRECTORY . "/" . _new_name();
 	last if _special_mkdir($temp, $self->{umask});
     }
-    foreach $name (keys(%data)) {
+    foreach $name (keys(%$data)) {
 	_fatal("unexpected data: %s", $name) unless $self->{type}{$name};
-	if ($self->{type}{$name} eq "binary") {
-	    _fatal("unexpected binary data in %s: %s", $name, $data{$name})
-		if ref($data{$name});
-	    eval {
-		_file_write("$temp/$name", 0, $self->{umask}, $data{$name});
-	    };
-	} elsif ($self->{type}{$name} eq "string") {
-	    _fatal("unexpected string data in %s: %s", $name, $data{$name})
-		if ref($data{$name});
-	    eval {
-		_file_write("$temp/$name", 1, $self->{umask}, $data{$name});
-	    };
+	if ($self->{type}{$name} =~ /^(binary|string)$/) {
+	    if ($self->{ref}{$name}) {
+		_fatal("unexpected %s data in %s: %s",
+		       $self->{type}{$name}, $name, $data->{$name})
+		    unless ref($data->{$name}) eq "SCALAR";
+		$ref = $data->{$name};
+	    } else {
+		_fatal("unexpected %s data in %s: %s",
+		       $self->{type}{$name}, $name, $data->{$name})
+		    if ref($data->{$name});
+		$ref = \$data->{$name};
+	    }
+	    $utf8 = $self->{type}{$name} eq "string";
 	} elsif ($self->{type}{$name} eq "table") {
-	    _fatal("unexpected table data in %s: %s", $name, $data{$name})
-		unless ref($data{$name}) eq "HASH";
-	    eval {
-		_file_write("$temp/$name", 1, $self->{umask}, _hash2string($data{$name}));
-	    };
+	    _fatal("unexpected %s data in %s: %s", $self->{type}{$name}, $name, $data->{$name})
+		unless ref($data->{$name}) eq "HASH";
+	    $ref = _hash2string($data->{$name});
+	    $utf8 = 1;
 	} else {
 	    _fatal("unexpected data type in %s: %s", $name, $self->{type}{$name});
 	}
+	eval {
+	    _file_write("$temp/$name", $utf8, $self->{umask}, $ref);
+	};
 	if ($@) {
 	    if ($@ =~ /^Wide character in /) {
-		_fatal("unexpected wide character in %s: %s", $name, $data{$name});
+		_fatal("unexpected wide character in %s: %s", $name, $data->{$name});
 	    } else {
 		die($@);
 	    }
@@ -797,7 +857,7 @@ sub add : method {
     }
     foreach $name (keys(%{ $self->{mandatory} })) {
 	_fatal("missing mandatory data: %s", $name)
-	    unless defined($data{$name});
+	    unless defined($data->{$name});
     }
     $dir = $self->_insertion_directory();
     while (1) {
@@ -889,9 +949,7 @@ sub purge : method {
 	$oldtime = time() - $option{maxlock};
 	$name = $self->first();
 	while ($name) {
-	    $path = $self->{path} . "/" . $name;
-	    next unless $self->_state($name) eq STATE_LOCKED;
-	    next unless _older($path, $oldtime);
+	    next unless $self->_is_locked($name, $oldtime);
 	    warn("* removing too old locked element: $name\n");
 	    $self->unlock($name, 1);
 	} continue {
@@ -1082,6 +1140,11 @@ By default, all pieces of data are mandatory. If you append a question
 mark to the type, this piece of data will be marked as optional. See
 the comments in the L</SYNOPSIS> section for more information.
 
+By default, string or binary data is used directly. If you append an
+asterisk to the type, the data that you add or get will be by
+reference. This can be useful to avoid string copies of large amounts
+of data.
+
 =head1 METHODS
 
 The following methods are available:
@@ -1121,8 +1184,9 @@ return an empty string if there is no next element
 
 =item add(DATA)
 
-add the given data (a hash) to the queue and return the corresponding
-element name; the schema must be known and the data must conform to it
+add the given data (a hash or hash reference) to the queue and return
+the corresponding element name; the schema must be known and the data
+must conform to it
 
 =item lock(ELEMENT[, PERMISSIVE])
 
@@ -1143,7 +1207,9 @@ remove the given element (which must be locked) from the queue
 =item get(ELEMENT)
 
 get the data from the given element (which must be locked) and return
-basically the same hash as what add() used; the schema must be known
+basically the same hash as what add() used (in list context, the hash
+is returned directly; in scalar context, the hash reference is
+returned instead); the schema must be known
 
 =item purge([OPTIONS])
 

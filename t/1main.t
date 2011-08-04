@@ -4,14 +4,14 @@ use strict;
 use warnings;
 use Encode;
 use Directory::Queue;
-use Test::More tests => 8;
+use Test::More tests => 13;
 use File::Temp qw(tempdir);
 use POSIX qw(:errno_h :fcntl_h);
 
 use constant STR_ISO     => "Théâtre Français";
 use constant STR_UNICODE => "is \x{263A}?";
 
-our($tmpdir, $dq, $elt, @list);
+our($tmpdir, $dq, $elt, @list, $tmp);
 
 sub dirlist ($) {
     my($path) = @_;
@@ -62,6 +62,20 @@ is(contents("$tmpdir/$elt/string"), encode("UTF-8", STR_UNICODE), "Unicode strin
 ok($dq->count() == 2, "count");
 
 $elt = $dq->first();
+ok(!$dq->_is_locked($elt), "lock testing 1");
 $dq->lock($elt) or die;
+ok($dq->_is_locked($elt), "lock testing 2");
 $dq->remove($elt);
 ok($dq->count() == 1, "remove");
+
+$elt = $dq->first();
+$dq->lock($elt) or die;
+$tmp = time() - 10;
+utime($tmp, $tmp, $dq->path() . "/" . $elt) or die;
+{
+    local $SIG{__WARN__} = sub { $tmp = 0 if $_[0] =~ /removing too old locked/ };
+    $dq->purge(maxlock => 5);
+}
+ok($tmp == 0, "purge 1");
+ok($dq->count() == 1, "purge 2");
+ok($dq->lock($elt), "purge 3");
