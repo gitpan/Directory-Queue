@@ -13,8 +13,8 @@
 package Directory::Queue;
 use strict;
 use warnings;
-our $VERSION  = "1.1_1";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.30 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.1_2";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.31 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
@@ -683,6 +683,24 @@ sub unlock : method {
 }
 
 #
+# touch an element directory to indicate that it is still being used
+#
+# note:
+#  - this is only really useful for locked elements but we allow it for all
+#
+
+sub touch : method {
+    my($self, $element) = @_;
+    my($time, $path);
+
+    _check_element($element);
+    $time = time();
+    $path = $self->{path} . "/" . $element;
+    utime($time, $time, $path)
+	or _fatal("cannot utime(%d, %d, %s): %s", $time, $time, $path, $!);
+}
+
+#
 # remove a locked element from the queue
 #
 
@@ -1199,6 +1217,12 @@ error if the element cannot be locked and false is returned
 attempt to unlock the given element and return true on success; if the
 PERMISSIVE option is true (which is I<not> the default), it is not a
 fatal error if the element cannot be unlocked and false is returned
+
+=item touch(ELEMENT)
+
+update the access and modification times on the element's directory to
+indicate that it is still being used; this is useful for elements that
+are locked for long periods of time (see the purge() method)
 
 =item remove(ELEMENT)
 

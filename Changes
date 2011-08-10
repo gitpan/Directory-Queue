@@ -1,11 +1,12 @@
 Revision history for Directory-Queue
 
-1.1_1	Thu Aug  4 2001 (developer release - for testing purposes only)
+1.1_2	Thu Aug 10 2001 (developer release - for testing purposes only)
 	* Improved the speed of the purge() method for large queues.
 	* Minimized the number of string copies required internally.
 	* The get() and add() methods can now use a hash reference.
 	* The schema can now define strings that are used by reference.
 	* The module $VERSION variables now contain the package version.
+	* Added the touch() method.
 
 1.1	Mon May  2 2011
 	* The purge() method is now more flexible.
