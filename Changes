@@ -1,6 +1,6 @@
 Revision history for Directory-Queue
 
-1.1_2	Thu Aug 10 2001 (developer release - for testing purposes only)
+1.1_3	Thu Aug 10 2001 (developer release - for testing purposes only)
 	* Improved the speed of the purge() method for large queues.
 	* Minimized the number of string copies required internally.
 	* The get() and add() methods can now use a hash reference.

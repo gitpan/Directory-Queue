@@ -13,8 +13,8 @@
 package Directory::Queue;
 use strict;
 use warnings;
-our $VERSION  = "1.1_2";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.31 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.1_3";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.32 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
@@ -764,12 +764,12 @@ sub get : method {
 	}
 	if ($self->{type}{$name} =~ /^(binary|string)$/) {
 	    $ref = _file_read($path, $self->{type}{$name} eq "string");
+	    $data{$name} = $self->{ref}{$name} ? $ref : $$ref;
 	} elsif ($self->{type}{$name} eq "table") {
-	    $ref = _string2hash(_file_read($path, 1));
+	    $data{$name} = _string2hash(_file_read($path, 1));
 	} else {
 	    _fatal("unexpected data type: %s", $self->{type}{$name});
 	}
-	$data{$name} = $self->{ref}{$name} ? $ref : $$ref;
     }
     return(\%data) unless wantarray();
     return(%data);
