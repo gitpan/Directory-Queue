@@ -13,25 +13,25 @@
 package Directory::Queue;
 use strict;
 use warnings;
-our $VERSION  = "1.2";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.32 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.3";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.35 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
 #
 
-use POSIX qw(:errno_h :fcntl_h);
-use Time::HiRes qw();
+use Directory::Queue::Base qw(:DIR :FILE :RE :ST _fatal _name);
+use POSIX qw(:errno_h);
+
+#
+# inheritance
+#
+
+our(@ISA) = qw(Directory::Queue::Base);
 
 #
 # constants
 #
-
-# stat(2) fields
-use constant ST_DEV   => 0;  # device
-use constant ST_INO   => 1;  # inode
-use constant ST_NLINK => 3;  # number of hard links
-use constant ST_MTIME => 9;  # time of last modification
 
 # name of the directory holding temporary elements
 use constant TEMPORARY_DIRECTORY => "temporary";
@@ -42,107 +42,25 @@ use constant OBSOLETE_DIRECTORY => "obsolete";
 # name of the directory indicating a locked element
 use constant LOCKED_DIRECTORY => "locked";
 
-# reasonable buffer size for file I/O operations
-use constant SYSBUFSIZE => 8192;
-
 #
 # global variables
 #
 
 our(
-    $_DirectoryRegexp,    # regexp matching an intermediate directory
-    $_ElementRegexp,      # regexp matching an element
     $_FileRegexp,	  # regexp matching a file in an element directory
     %_Byte2Esc,           # byte to escape map
     %_Esc2Byte,           # escape to byte map
 );
 
-$_DirectoryRegexp = qr/[0-9a-f]{8}/;
-$_ElementRegexp   = qr/[0-9a-f]{14}/;
-$_FileRegexp      = qr/[0-9a-zA-Z]+/;
-
-%_Byte2Esc = ("\x5c" => "\\\\", "\x09" => "\\t", "\x0a" => "\\n");
-%_Esc2Byte = reverse(%_Byte2Esc);
+$_FileRegexp = qr/[0-9a-zA-Z]+/;
+%_Byte2Esc   = ("\x5c" => "\\\\", "\x09" => "\\t", "\x0a" => "\\n");
+%_Esc2Byte   = reverse(%_Byte2Esc);
 
 #+++############################################################################
 #                                                                              #
 # Helper Functions                                                             #
 #                                                                              #
 #---############################################################################
-
-#
-# report a fatal error
-#
-
-sub _fatal ($@) {
-    my($format, @arguments) = @_;
-    my($message);
-
-    $message = sprintf($format, @arguments);
-    $message =~ s/\s+$//;
-    die(caller() . ": $message\n");
-}
-
-#
-# read from a file
-#
-
-sub _file_read ($$) {
-    my($path, $utf8) = @_;
-    my($fh, $data, $done);
-
-    sysopen($fh, $path, O_RDONLY)
-	or _fatal("cannot sysopen(%s, O_RDONLY): %s", $path, $!);
-    if ($utf8) {
-	binmode($fh, ":encoding(utf8)")
-	    or _fatal("cannot binmode(%s, :encoding(utf8)): %s", $path, $!);
-    } else {
-	binmode($fh)
-	    or _fatal("cannot binmode(%s): %s", $path, $!);
-    }
-    $data = "";
-    $done = -1;
-    while ($done) {
-	$done = sysread($fh, $data, SYSBUFSIZE, length($data));
-	_fatal("cannot sysread(%s): %s", $path, $!) unless defined($done);
-    }
-    close($fh) or _fatal("cannot close(%s): %s", $path, $!);
-    return(\$data);
-}
-
-#
-# write to a file
-#
-
-sub _file_write ($$$$) {
-    my($path, $utf8, $umask, $dataref) = @_;
-    my($fh, $oldumask, $success, $length, $offset, $done);
-
-    if (defined($umask)) {
-	$oldumask = umask($umask);
-	$success = sysopen($fh, $path, O_WRONLY|O_CREAT|O_EXCL);
-	umask($oldumask);
-    } else {
-	$success = sysopen($fh, $path, O_WRONLY|O_CREAT|O_EXCL);
-    }
-    _fatal("cannot sysopen(%s, O_WRONLY|O_CREAT|O_EXCL): %s", $path, $!) unless $success;
-    if ($utf8) {
-	binmode($fh, ":encoding(utf8)")
-	    or _fatal("cannot binmode(%s, :encoding(utf8)): %s", $path, $!);
-    } else {
-	binmode($fh)
-	    or _fatal("cannot binmode(%s): %s", $path, $!);
-    }
-    $length = length($$dataref);
-    $offset = 0;
-    while ($length) {
-	$done = syswrite($fh, $$dataref, SYSBUFSIZE, $offset);
-	_fatal("cannot syswrite(%s): %s", $path, $!) unless defined($done);
-	$length -= $done;
-	$offset += $done;
-    }
-    close($fh) or _fatal("cannot close(%s): %s", $path, $!);
-}
 
 #
 # transform a hash of strings into a string (reference)
@@ -187,29 +105,6 @@ sub _string2hash ($) {
 	$hash{$key} = $value;
     }
     return(\%hash);
-}
-
-#
-# get the contents of a directory as a list of names, without . and ..
-#
-# note:
-#  - if the optional second argument is true, it is not an error if the
-#    directory does not exist (anymore)
-#
-
-sub _directory_contents ($;$) {
-    my($path, $missingok) = @_;
-    my($dh, @list);
-
-    unless (opendir($dh, $path)) {
-	_fatal("cannot opendir(%s): %s", $path, $!)
-	    unless $missingok and $! == ENOENT;
-	# RACE: this path does not exist (anymore)
-	return();
-    }
-    @list = grep($_ !~ /^\.\.?$/, readdir($dh));
-    closedir($dh) or _fatal("cannot closedir(%s): %s", $path, $!);
-    return(@list);
 }
 
 #
@@ -266,7 +161,7 @@ sub _subdirs_stat ($) {
 sub _subdirs_readdir ($) {
     my($path) = @_;
 
-    return(scalar(_directory_contents($path, 1)));
+    return(scalar(_special_getdir($path)));
 }
 
 # use the right version (we cannot rely on hard links on DOS-like systems)
@@ -275,73 +170,6 @@ if ($^O =~ /^(cygwin|dos|MSWin32)$/) {
     *_subdirs = \&_subdirs_readdir;
 } else {
     *_subdirs = \&_subdirs_stat;
-}
-
-#
-# create a directory:
-#  - return true on success
-#  - return false if something with the same path already exists
-#  - die in case of any other error
-#
-# note:
-#  - in case something with the same path already exists, we do not check
-#    that this is indeed a directory as this should always be the case here
-#
-
-sub _special_mkdir ($$) {
-    my($path, $umask) = @_;
-    my($oldumask, $success);
-
-    if (defined($umask)) {
-	$oldumask = umask($umask);
-	$success = mkdir($path);
-	umask($oldumask);
-    } else {
-	$success = mkdir($path);
-    }
-    unless ($success) {
-	_fatal("cannot mkdir(%s): %s", $path, $!) unless $! == EEXIST;
-	# RACE: this path (now) exists
-	return(0);
-    }
-    return(1);
-}
-
-#
-# delete a directory:
-#  - return true on success
-#  - return false if the path does not exist (anymore)
-#  - die in case of any other error
-#
-
-sub _special_rmdir ($) {
-    my($path) = @_;
-
-    unless (rmdir($path)) {
-	_fatal("cannot rmdir(%s): %s", $path, $!) unless $! == ENOENT;
-	# RACE: this path does not exist (anymore)
-	return(0);
-    }
-    return(1);
-}
-
-#
-# return the name of a new element to (try to) use with:
-#  - 8 hexadecimal digits for the number of seconds since the Epoch
-#  - 5 hexadecimal digits for the microseconds part
-#  - 1 hexadecimal digit from the pid to further reduce name collisions
-#
-# properties:
-#  - fixed size (14 hexadecimal digits)
-#  - likely to be unique (with high-probability)
-#  - can be lexically sorted
-#  - ever increasing (for a given process)
-#  - reasonably compact
-#  - matching $_ElementRegexp
-#
-
-sub _new_name () {
-    return(sprintf("%08x%05x%01x", Time::HiRes::gettimeofday(), $$ % 16));
 }
 
 #
@@ -367,31 +195,20 @@ sub _check_element ($) {
 
 sub new : method {
     my($class, %option) = @_;
-    my($self, $name, $options, $path, @stat);
+    my($self, $name, $path, $options);
 
     # default object
-    $self = {
-	dirs => [],	      # cached list of intermediate directories
-	elts => [],	      # cached list of elements
-	maxelts => 16_000,    # maximum number of elements allowed per directory
-    };
-    # check options
-    _fatal("missing option: path") unless defined($option{path});
-    foreach $name (qw(path umask maxelts)) {
- 	next unless defined($option{$name});
-	_fatal("invalid %s: %s", $name, $option{$name})
-	    if ref($option{$name});
-	$self->{$name} = delete($option{$name});
+    $self = __PACKAGE__->SUPER::new(%option);
+    foreach $name (qw(path umask)) {
+	delete($option{$name});
     }
-    # check umask
-    if (defined($self->{umask})) {
-	_fatal("invalid umask: %s", $self->{umask})
-	    unless $self->{umask} =~ /^\d+$/ and $self->{umask} < 512;
-    }
+    # default options
+    $self->{maxelts} = 16_000;    # maximum number of elements allowed per directory
     # check maxelts
-    if (defined($self->{maxelts})) {
-	_fatal("invalid maxelts: %s", $self->{maxelts})
-	    unless $self->{maxelts} =~ /^\d+$/ and $self->{maxelts} > 0;
+    if (defined($option{maxelts})) {
+	_fatal("invalid maxelts: %s", $option{maxelts})
+	    unless $option{maxelts} =~ /^\d+$/ and $option{maxelts} > 0;
+	$self->{maxelts} = delete($option{maxelts});
     }
     # check schema
     if (defined($option{schema})) {
@@ -417,107 +234,13 @@ sub new : method {
     foreach $name (keys(%option)) {
 	_fatal("unexpected option: %s", $name);
     }
-    bless($self, $class);
-    # create toplevel directory
-    $path = "";
-    foreach $name (split(/\/+/, $self->{path})) {
-	$path .= $name . "/";
-	_special_mkdir($path, $self->{umask}) unless -d $path;
-    }
-    # create other directories
+    # create directories
     foreach $name (TEMPORARY_DIRECTORY, OBSOLETE_DIRECTORY) {
 	$path = $self->{path} . "/" . $name;
 	_special_mkdir($path, $self->{umask}) unless -d $path;
     }
-    # store the queue unique identifier
-    if ($^O =~ /^(cygwin|dos|MSWin32)$/) {
-	# we cannot rely on inode number :-(
-	$self->{id} = $self->{path};
-    } else {
-	# device number plus inode number should be unique
-	@stat = stat($self->{path});
-	_fatal("cannot stat(%s): %s", $self->{path}, $!) unless @stat;
-	$self->{id} = $stat[ST_DEV] . ":" . $stat[ST_INO];
-    }
     # so far so good...
     return($self);
-}
-
-#
-# copy/clone the object
-#
-# note:
-#  - the main purpose is to copy/clone the iterator cached state
-#  - the other structured attributes (including schema) are not cloned
-#    (this is not a problem as they should not change)
-#
-
-sub copy : method {
-    my($self) = @_;
-    my($copy);
-
-    $copy = { %$self };
-    $copy->{dirs} = [];
-    $copy->{elts} = [];
-    bless($copy, ref($self));
-    return($copy);
-}
-
-#
-# return the queue toplevel path
-#
-
-sub path : method {
-    my($self) = @_;
-
-    return($self->{path});
-}
-
-#
-# return a unique identifier for the queue
-#
-
-sub id : method {
-    my($self) = @_;
-
-    return($self->{id});
-}
-
-#
-# return the name of the next element in the queue, using cached information
-#
-
-sub next : method {
-    my($self) = @_;
-    my($dir, $name, @list);
-
-    return(shift(@{ $self->{elts} })) if @{ $self->{elts} };
-    while (@{ $self->{dirs} }) {
-	$dir = shift(@{ $self->{dirs} });
-	foreach $name (_directory_contents($self->{path} . "/" . $dir, 1)) {
-	    push(@list, $1) if $name =~ /^($_ElementRegexp)$/o; # untaint
-	}
-	next unless @list;
-	$self->{elts} = [ map("$dir/$_", sort(@list)) ];
-	return(shift(@{ $self->{elts} }));
-    }
-    return("");
-}
-
-#
-# return the first element in the queue and cache information about the next ones
-#
-
-sub first : method {
-    my($self) = @_;
-    my($name, @list);
-
-    foreach $name (_directory_contents($self->{path})) {
-	push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
-    }
-    $self->{dirs} = [ sort(@list) ];
-    $self->{elts} = [];
-    return($self->next());
 }
 
 #
@@ -530,7 +253,7 @@ sub count : method {
 
     $count = 0;
     # get the list of existing directories
-    foreach $name (_directory_contents($self->{path})) {
+    foreach $name (_special_getdir($self->{path}, "strict")) {
 	push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
     }
     # count sub-directories
@@ -683,24 +406,6 @@ sub unlock : method {
 }
 
 #
-# touch an element directory to indicate that it is still being used
-#
-# note:
-#  - this is only really useful for locked elements but we allow it for all
-#
-
-sub touch : method {
-    my($self, $element) = @_;
-    my($time, $path);
-
-    _check_element($element);
-    $time = time();
-    $path = $self->{path} . "/" . $element;
-    utime($time, $time, $path)
-	or _fatal("cannot utime(%d, %d, %s): %s", $time, $time, $path, $!);
-}
-
-#
 # remove a locked element from the queue
 #
 
@@ -713,14 +418,14 @@ sub remove : method {
     # move the element out of its intermediate directory
     $path = $self->{path} . "/" . $element;
     while (1) {
-	$temp = $self->{path} . "/" . OBSOLETE_DIRECTORY . "/" . _new_name();
+	$temp = $self->{path} . "/" . OBSOLETE_DIRECTORY . "/" . _name();
 	rename($path, $temp) and last;
 	_fatal("cannot rename(%s, %s): %s", $path, $temp, $!)
 	    unless $! == ENOTEMPTY or $! == EEXIST;
 	# RACE: the target directory was already present...
     }
     # remove the data files
-    foreach $name (_directory_contents($temp)) {
+    foreach $name (_special_getdir($temp, "strict")) {
 	next if $name eq LOCKED_DIRECTORY;
 	_fatal("unexpected file in %s: %s", $temp, $name)
 	    unless $name =~ /^($_FileRegexp)$/o;
@@ -787,7 +492,7 @@ sub _insertion_directory : method {
     my(@list, $name, $subdirs);
 
     # get the list of existing directories
-    foreach $name (_directory_contents($self->{path})) {
+    foreach $name (_special_getdir($self->{path}, "strict")) {
 	push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
     }
     # handle the case with no directories yet
@@ -836,7 +541,7 @@ sub add : method {
 	$data = { @data };
     }
     while (1) {
-	$temp = $self->{path} . "/" . TEMPORARY_DIRECTORY . "/" . _new_name();
+	$temp = $self->{path} . "/" . TEMPORARY_DIRECTORY . "/" . _name();
 	last if _special_mkdir($temp, $self->{umask});
     }
     foreach $name (keys(%$data)) {
@@ -879,7 +584,7 @@ sub add : method {
     }
     $dir = $self->_insertion_directory();
     while (1) {
-	$name = $dir . "/" . _new_name();
+	$name = $dir . "/" . _name();
 	$path = $self->{path} . "/" . $name;
 	rename($temp, $path) and return($name);
 	_fatal("cannot rename(%s, %s): %s", $temp, $path, $!)
@@ -896,11 +601,11 @@ sub _volatile : method {
     my($self) = @_;
     my(@list, $name);
 
-    foreach $name (_directory_contents($self->{path} . "/" . TEMPORARY_DIRECTORY, 1)) {
+    foreach $name (_special_getdir($self->{path} . "/" . TEMPORARY_DIRECTORY)) {
 	push(@list, TEMPORARY_DIRECTORY . "/" . $1)
 	    if $name =~ /^($_ElementRegexp)$/o; # untaint
     }
-    foreach $name (_directory_contents($self->{path} . "/" . OBSOLETE_DIRECTORY, 1)) {
+    foreach $name (_special_getdir($self->{path} . "/" . OBSOLETE_DIRECTORY)) {
 	push(@list, OBSOLETE_DIRECTORY . "/" . $1)
 	    if $name =~ /^($_ElementRegexp)$/o; # untaint
     }
@@ -931,7 +636,7 @@ sub purge : method {
     }
     # get the list of intermediate directories
     @list = ();
-    foreach $name (_directory_contents($self->{path})) {
+    foreach $name (_special_getdir($self->{path}, "strict")) {
 	push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
     }
     @list = sort(@list);
@@ -952,7 +657,7 @@ sub purge : method {
 	    $path = $self->{path} . "/" . $name;
 	    next unless _older($path, $oldtime);
 	    warn("* removing too old volatile element: $name\n");
-	    foreach $file (_directory_contents($path, 1)) {
+	    foreach $file (_special_getdir($path)) {
 		next if $file eq LOCKED_DIRECTORY;
 		$fpath = "$path/$file";
 		unlink($fpath) and next;
@@ -1064,15 +769,15 @@ Who should be first in the queue, Writer1 or Writer2?
 For simplicity, this implementation provides only "best effort FIFO",
 i.e. there is a very high probability that elements are processed in
 FIFO order but this is not guaranteed. This is achieved by using a
-high-resolution time function and having elements sorted by the time
-the element's final directory gets created.
+high-resolution timer and having elements sorted by the time their
+final directory gets created.
 
 =head1 LOCKING
 
 Adding an element is not a problem because the add() method is atomic.
 
-In order to support multiple processes interacting with the same
-queue, advisory locking is used. Processes should first lock an
+In order to support multiple reader processes interacting with the
+same queue, advisory locking is used. Processes should first lock an
 element before working with it. In fact, the get() and remove()
 methods report a fatal error if they are called on unlocked elements.
 
@@ -1084,7 +789,7 @@ An element can basically be in only one of two states: locked or
 unlocked.
 
 A newly created element is unlocked as a writer usually does not need
-to do anything more with the element once dropped in the queue.
+to do anything more with it.
 
 Iterators return all the elements, regardless of their states.
 
@@ -1139,13 +844,13 @@ The value represents the type of the given piece of data. It can be:
 
 =item binary
 
-the data is a sequence of binary bytes, it will be stored directly in
-a plain file with no further encoding
+the data is a binary string (i.e. a sequence of bytes), it will be
+stored directly in a plain file with no further encoding
 
 =item string
 
 the data is a text string (i.e. a sequence of characters), it will be
-UTF-8 encoded
+UTF-8 encoded before being stored in a file
 
 =item table
 
@@ -1156,7 +861,7 @@ serialized and UTF-8 encoded before being stored in a file
 
 By default, all pieces of data are mandatory. If you append a question
 mark to the type, this piece of data will be marked as optional. See
-the comments in the L</SYNOPSIS> section for more information.
+the comments in the L</SYNOPSIS> section for an example.
 
 By default, string or binary data is used directly. If you append an
 asterisk to the type, the data that you add or get will be by
@@ -1231,9 +936,10 @@ remove the given element (which must be locked) from the queue
 =item get(ELEMENT)
 
 get the data from the given element (which must be locked) and return
-basically the same hash as what add() used (in list context, the hash
-is returned directly; in scalar context, the hash reference is
-returned instead); the schema must be known
+basically the same hash as what add() got (in list context, the hash
+is returned directly while in scalar context, the hash reference is
+returned instead); the schema must be knownand the data must conform
+to it
 
 =item purge([OPTIONS])
 

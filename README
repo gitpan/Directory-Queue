@@ -25,6 +25,7 @@ After installing, you can find documentation for this module with the
 perldoc command.
 
     perldoc Directory::Queue
+    perldoc Directory::Queue::Simple
     perldoc Directory::Queue::Set
 
 LICENSE AND COPYRIGHT

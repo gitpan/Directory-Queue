@@ -13,15 +13,24 @@
 package Directory::Queue::Set;
 use strict;
 use warnings;
-our $VERSION  = "1.2";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.4 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.3";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.7 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
 #
 
-use Directory::Queue;
-use UNIVERSAL qw();
+use Directory::Queue::Base qw(_fatal);
+
+#
+# return true if the given thing is a Directory::Queue object
+#
+
+sub _isdq ($) {
+    my($thing) = @_;
+
+    return(ref($thing) && $thing->isa("Directory::Queue::Base"));
+}
 
 #
 # object constructor
@@ -46,14 +55,13 @@ sub add : method {
     my($dirq, $id);
 
     foreach $dirq (@list) {
-	Directory::Queue::_fatal("not a Directory::Queue object: %s", $dirq)
-	    unless UNIVERSAL::isa($dirq, "Directory::Queue");
+	_fatal("not a Directory::Queue object: %s", $dirq) unless _isdq($dirq);
 	$id = $dirq->id();
-	Directory::Queue::_fatal("duplicate queue in set: %s", $dirq->path())
+	_fatal("duplicate queue in set: %s", $dirq->path())
 	    if $self->{dirq}{$id};
 	$self->{dirq}{$id} = $dirq->copy();
     }
-    # reset the iterator
+    # reset our iterator
     delete($self->{elt});
 }
 
@@ -66,14 +74,13 @@ sub remove : method {
     my($dirq, $id);
 
     foreach $dirq (@list) {
-	Directory::Queue::_fatal("not a Directory::Queue object: %s", $dirq)
-	    unless UNIVERSAL::isa($dirq, "Directory::Queue");
+	_fatal("not a Directory::Queue object: %s", $dirq) unless _isdq($dirq);
 	$id = $dirq->id();
-	Directory::Queue::_fatal("missing queue in set: %s", $dirq->path())
+	_fatal("missing queue in set: %s", $dirq->path())
 	    unless $self->{dirq}{$id};
 	delete($self->{dirq}{$id});
     }
-    # reset the iterator
+    # reset our iterator
     delete($self->{elt});
 }
 
@@ -164,6 +171,9 @@ This module can be used to put different queues into a set and browse
 them as one queue. The elements from all queues are merged together
 and sorted independently from the queue they belong to.
 
+It works both with L<Directory::Queue> and L<Directory::Queue::Simple>
+queues. Queues of different types can even be mixed.
+
 =head1 METHODS
 
 The following methods are available:
@@ -172,29 +182,26 @@ The following methods are available:
 
 =item new([DIRQ...])
 
-return a new Directory::Queue::Set object containing the given
-Directory::Queue objects (class method)
+return a new Directory::Queue::Set object containing the given queue objects
+(class method)
 
 =item add([DIRQ...])
 
-add the given Directory::Queue objects to the queue set;
-resetting the iterator
+add the given queue objects to the queue set; resetting the iterator
 
 =item remove([DIRQ...])
 
-remove the given Directory::Queue objects from the queue set;
-resetting the iterator
+remove the given queue objects from the queue set; resetting the iterator
 
 =item first()
 
-return the first (queue, element) couple in the queue set,
-resetting the iterator;
-return an empty list if the queue is empty
+return the first (queue, element) couple in the queue set, resetting the
+iterator; return an empty list if the queue is empty
 
 =item next()
 
-return the next (queue, element) couple in the queue set; return an
-empty list if there is no next element
+return the next (queue, element) couple in the queue set; return an empty
+list if there is no next element
 
 =item count()
 
@@ -206,4 +213,4 @@ return the total number of elements in all the queues of the set
 
 Lionel Cons L<http://cern.ch/lionel.cons>
 
-Copyright CERN 2010
+Copyright CERN 2010-2011
