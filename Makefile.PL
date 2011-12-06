@@ -7,19 +7,22 @@ my(%param, $emv, $name);
 %param = (
     NAME                => 'Directory::Queue',
     AUTHOR              => 'Lionel Cons <lionel.cons@cern.ch>',
-    VERSION             => '1.3',
+    VERSION             => '1.4',
     ABSTRACT_FROM       => 'lib/Directory/Queue.pm',
     LICENSE             => 'perl',
     PL_FILES            => {},
     BUILD_REQUIRES => {
         'Encode'        => 0,
         'File::Temp'    => 0,
+        # optional: Pod::Coverage
         'Test::More'    => 0,
+        # optional: Test::Pod
+        # optional: Test::Pod::Coverage
     },
     PREREQ_PM => {
+        'Exporter'      => 0,
         'POSIX'         => 0,
         'Time::HiRes'   => 0,
-        'UNIVERSAL'     => 0,
     },
     dist                => { COMPRESS => 'gzip -9f', SUFFIX => 'gz' },
     clean               => { FILES => 'Directory-Queue-*' },

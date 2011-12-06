@@ -13,8 +13,8 @@
 package Directory::Queue::Base;
 use strict;
 use warnings;
-our $VERSION  = "1.3";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.4 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.4";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.5 $ =~ /(\d+)\.(\d+)/);
 
 #
 # export control
@@ -59,7 +59,7 @@ use constant ST_MTIME => 9;  # time of last modification
 # reasonable buffer size for file I/O operations
 #
 
-use constant SYSBUFSIZE => 8192;
+use constant SYSBUFSIZE => 1_048_576; # 1MB
 
 #
 # regular expressions

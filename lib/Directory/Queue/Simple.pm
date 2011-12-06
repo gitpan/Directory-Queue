@@ -13,8 +13,8 @@
 package Directory::Queue::Simple;
 use strict;
 use warnings;
-our $VERSION  = "1.3";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.4 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.4";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.5 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
@@ -325,7 +325,7 @@ Directory::Queue::Simple - object oriented interface to a simple directory based
   }
 
   #
-  # sample consumer
+  # sample consumer (one pass only)
   #
 
   $dirq = Directory::Queue::Simple->new(path => "/tmp/test");

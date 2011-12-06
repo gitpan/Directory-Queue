@@ -13,8 +13,8 @@
 package Directory::Queue;
 use strict;
 use warnings;
-our $VERSION  = "1.3";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.35 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.4";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.37 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
@@ -713,7 +713,7 @@ Directory::Queue - object oriented interface to a directory based queue
   }
 
   #
-  # sample consumer
+  # sample consumer (one pass only)
   #
 
   $dirq = Directory::Queue->new(path => $queuedir, schema => $schema);
@@ -726,6 +726,18 @@ Directory::Queue - object oriented interface to a directory based queue
       $dirq->remove($name);
   }
 
+  #
+  # looping consumer (sleeping to avoid using all CPU time)
+  #
+
+  $dirq = Directory::Queue->new(path => $queuedir, schema => $schema);
+  while (1) {
+      sleep(1) unless $dirq->count();
+      for ($name = $dirq->first(); $name; $name = $dirq->next()) {
+          ... same as above ...
+      }
+  }
+
 =head1 DESCRIPTION
 
 The goal of this module is to offer a simple queue system using the
@@ -735,8 +747,8 @@ and scalability.
 
 This module allows multiple concurrent readers and writers to interact
 with the same queue. A Python implementation of the same algorithm is
-available at L<http://code.google.com/p/dirq> so readers and writers
-can even be written in different languages.
+available at http://pypi.python.org/pypi/dirq/ so readers and writers
+can be written in different programming languages.
 
 There is no knowledge of priority within a queue. If multiple
 priorities are needed, multiple queues should be used.
