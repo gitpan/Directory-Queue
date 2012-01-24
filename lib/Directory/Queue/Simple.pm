@@ -13,21 +13,21 @@
 package Directory::Queue::Simple;
 use strict;
 use warnings;
-our $VERSION  = "1.4";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.5 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.5";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.8 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
 #
 
-use Directory::Queue::Base qw(:DIR :FILE :RE :ST _fatal _name SYSBUFSIZE);
+use Directory::Queue qw(:DIR :FILE :RE :ST _fatal _name SYSBUFSIZE);
 use POSIX qw(:errno_h);
 
 #
 # inheritance
 #
 
-our(@ISA) = qw(Directory::Queue::Base);
+our(@ISA) = qw(Directory::Queue);
 
 #
 # constants
@@ -48,7 +48,7 @@ sub new : method {
     my($self, $name);
 
     # default object
-    $self = __PACKAGE__->SUPER::new(%option);
+    $self = __PACKAGE__->SUPER::_new(%option);
     foreach $name (qw(path umask)) {
 	delete($option{$name});
     }
@@ -339,43 +339,11 @@ Directory::Queue::Simple - object oriented interface to a simple directory based
 
 =head1 DESCRIPTION
 
-This module is very similar to L<Directory::Queue> but uses a
-different way to store data in the filesystem, using less
-directories. Its API is almost identical.
+The goal of this module is to offer a "simple" (as opposed to
+"normal") queue system using the underlying filesystem for storage,
+security and to prevent race conditions via atomic operations.
 
-Compared to L<Directory::Queue>, this module:
-
-=over
-
-=item *
-
-is simpler
-
-=item *
-
-is faster
-
-=item *
-
-uses less space on disk
-
-=item *
-
-can be given existing files to store
-
-=item *
-
-does not support schemas
-
-=item *
-
-can only store and retrieve binary strings
-
-=item *
-
-is not compatible (at filesystem level) with Directory::Queue
-
-=back
+It only allows binary strings to be stored but it is fast and small.
 
 Please refer to L<Directory::Queue> for general information about
 directory queues.
@@ -563,8 +531,12 @@ suffix.
 A locked element will have a hard link with the same name and the
 C<.lck> suffix.
 
+=head1 SEE ALSO
+
+L<Directory::Queue>.
+
 =head1 AUTHOR
 
 Lionel Cons L<http://cern.ch/lionel.cons>
 
-Copyright CERN 2011
+Copyright CERN 2011-2012

@@ -13,672 +13,434 @@
 package Directory::Queue;
 use strict;
 use warnings;
-our $VERSION  = "1.4";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.37 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.5";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.39 $ =~ /(\d+)\.(\d+)/);
+
+#
+# export control
+#
+
+use Exporter;
+our(@ISA, @EXPORT, @EXPORT_OK, %EXPORT_TAGS);
+@ISA = qw(Exporter);
+@EXPORT = qw();
+@EXPORT_OK = qw(_fatal _name SYSBUFSIZE);
+%EXPORT_TAGS = (
+    "DIR"  => [qw(_special_mkdir _special_rmdir _special_getdir)],
+    "FILE" => [qw(_file_read _file_create _file_write)],
+    "RE"   => [qw($_DirectoryRegexp $_ElementRegexp)],
+    "ST"   => [qw(ST_DEV ST_INO ST_NLINK ST_MTIME)],
+);
+Exporter::export_tags();
 
 #
 # used modules
 #
 
-use Directory::Queue::Base qw(:DIR :FILE :RE :ST _fatal _name);
-use POSIX qw(:errno_h);
-
-#
-# inheritance
-#
-
-our(@ISA) = qw(Directory::Queue::Base);
-
-#
-# constants
-#
-
-# name of the directory holding temporary elements
-use constant TEMPORARY_DIRECTORY => "temporary";
-
-# name of the directory holding obsolete elements
-use constant OBSOLETE_DIRECTORY => "obsolete";
-
-# name of the directory indicating a locked element
-use constant LOCKED_DIRECTORY => "locked";
+use POSIX qw(:errno_h :fcntl_h);
+use Time::HiRes qw();
 
 #
 # global variables
 #
 
 our(
-    $_FileRegexp,	  # regexp matching a file in an element directory
-    %_Byte2Esc,           # byte to escape map
-    %_Esc2Byte,           # escape to byte map
+    %_LoadedModule,             # hash of successfully loaded modules
 );
 
-$_FileRegexp = qr/[0-9a-zA-Z]+/;
-%_Byte2Esc   = ("\x5c" => "\\\\", "\x09" => "\\t", "\x0a" => "\\n");
-%_Esc2Byte   = reverse(%_Byte2Esc);
-
 #+++############################################################################
 #                                                                              #
-# Helper Functions                                                             #
+# Constants                                                                    #
 #                                                                              #
 #---############################################################################
 
 #
-# transform a hash of strings into a string (reference)
-#
-# note:
-#  - the keys are sorted so that identical hashes yield to identical strings
+# interesting stat(2) fields
 #
 
-sub _hash2string ($) {
-    my($hash) = @_;
-    my($key, $value, $string);
-
-    $string = "";
-    foreach $key (sort(keys(%$hash))) {
-	$value = $hash->{$key};
-	_fatal("undefined hash value: %s", $key) unless defined($value);
-	_fatal("invalid hash scalar: %s", $value) if ref($value);
-	$key   =~ s/([\x5c\x09\x0a])/$_Byte2Esc{$1}/g;
-	$value =~ s/([\x5c\x09\x0a])/$_Byte2Esc{$1}/g;
-	$string .= $key . "\x09" . $value . "\x0a";
-    }
-    return(\$string);
-}
+use constant ST_DEV   => 0;  # device
+use constant ST_INO   => 1;  # inode
+use constant ST_NLINK => 3;  # number of hard links
+use constant ST_MTIME => 9;  # time of last modification
 
 #
-# transform a string (reference) into a hash of strings
-#
-# note:
-#  - duplicate keys are not checked (the last one wins)
+# reasonable buffer size for file I/O operations
 #
 
-sub _string2hash ($) {
-    my($stringref) = @_;
-    my($line, $key, $value, %hash);
-
-    foreach $line (split(/\x0a/, $$stringref)) {
-	_fatal("unexpected hash line: %s", $line)
-	    unless $line =~ /^([^\x09\x0a]*)\x09([^\x09\x0a]*)$/o;
-	($key, $value) = ($1, $2);
-	$key   =~ s/(\\[\\tn])/$_Esc2Byte{$1}/g;
-	$value =~ s/(\\[\\tn])/$_Esc2Byte{$1}/g;
-	$hash{$key} = $value;
-    }
-    return(\%hash);
-}
+use constant SYSBUFSIZE => 1_048_576; # 1MB
 
 #
-# check if a path is old enough:
-#  - return true if the path exists and is (strictly) older than the given time
-#  - return false if it does not exist or it is newer
-#  - die in case of any other error
-#
-# note:
-#  - lstat() is used so symlinks are not followed
+# regular expressions
 #
 
-sub _older ($$) {
-    my($path, $time) = @_;
-    my(@stat);
+our(
+    $_DirectoryRegexp,    # regexp matching an intermediate directory
+    $_ElementRegexp,      # regexp matching an element
+);
 
-    @stat = lstat($path);
-    unless (@stat) {
-	_fatal("cannot lstat(%s): %s", $path, $!) unless $! == ENOENT;
-	# RACE: this path does not exist (anymore)
-	return(0);
-    }
-    return($stat[ST_MTIME] < $time);
-}
-
-#
-# count the number of sub-directories in the given directory:
-#  - return undef if the directory does not exist (anymore)
-#  - die in case of any other error
-#
-
-# stat version (faster):
-#  - lstat() is used so symlinks are not followed
-#  - this only checks the number of hard links
-#  - we do not even check that the given path indeed points to a directory!
-
-sub _subdirs_stat ($) {
-    my($path) = @_;
-    my(@stat);
-
-    @stat = lstat($path);
-    unless (@stat) {
-	_fatal("cannot lstat(%s): %s", $path, $!) unless $! == ENOENT;
-	# RACE: this path does not exist (anymore)
-	return();
-    }
-    return($stat[ST_NLINK] - 2);
-}
-
-# readdir version (slower):
-#  - we really count the number of entries
-#  - we however do not check that these entries are themselves indeed directories
-
-sub _subdirs_readdir ($) {
-    my($path) = @_;
-
-    return(scalar(_special_getdir($path)));
-}
-
-# use the right version (we cannot rely on hard links on DOS-like systems)
-
-if ($^O =~ /^(cygwin|dos|MSWin32)$/) {
-    *_subdirs = \&_subdirs_readdir;
-} else {
-    *_subdirs = \&_subdirs_stat;
-}
-
-#
-# check the given string to make sure it represents a valid element name
-#
-
-sub _check_element ($) {
-    my($element) = @_;
-
-    _fatal("invalid element: %s", $element)
-	unless $element =~ m/^(?:$_DirectoryRegexp)\/(?:$_ElementRegexp)$/o;
-}
+$_DirectoryRegexp = qr/[0-9a-f]{8}/;
+$_ElementRegexp   = qr/[0-9a-f]{14}/;
 
 #+++############################################################################
 #                                                                              #
-# Object Oriented Interface                                                    #
+# Common Code                                                                  #
 #                                                                              #
 #---############################################################################
 
 #
-# object constructor
+# report a fatal error with a sprintf() API
 #
 
-sub new : method {
-    my($class, %option) = @_;
-    my($self, $name, $path, $options);
+sub _fatal ($@) {
+    my($message, @arguments) = @_;
 
-    # default object
-    $self = __PACKAGE__->SUPER::new(%option);
-    foreach $name (qw(path umask)) {
-	delete($option{$name});
-    }
-    # default options
-    $self->{maxelts} = 16_000;    # maximum number of elements allowed per directory
-    # check maxelts
-    if (defined($option{maxelts})) {
-	_fatal("invalid maxelts: %s", $option{maxelts})
-	    unless $option{maxelts} =~ /^\d+$/ and $option{maxelts} > 0;
-	$self->{maxelts} = delete($option{maxelts});
-    }
-    # check schema
-    if (defined($option{schema})) {
-	_fatal("invalid schema: %s", $option{schema})
-	    unless ref($option{schema}) eq "HASH";
-	foreach $name (keys(%{ $option{schema} })) {
-	    _fatal("invalid schema name: %s", $name)
-		unless $name =~ /^($_FileRegexp)$/ and $name ne LOCKED_DIRECTORY;
-	    _fatal("invalid schema type: %s", $option{schema}{$name})
-		unless $option{schema}{$name} =~ /^(binary|string|table)([\?\*]{0,2})$/;
-	    $self->{type}{$name} = $1;
-	    $options = $2;
-	    $self->{mandatory}{$name} = 1 unless $options =~ /\?/;
-	    $self->{ref}{$name} = 1 if $options =~ /\*/;
-	    _fatal("invalid schema type: %s", $option{schema}{$name})
-		if $self->{type}{$name} eq "table" and $self->{ref}{$name};
-	}
-	_fatal("invalid schema: no mandatory data")
-	    unless $self->{mandatory};
-	delete($option{schema});
-    }
-    # check unexpected options
-    foreach $name (keys(%option)) {
-	_fatal("unexpected option: %s", $name);
-    }
-    # create directories
-    foreach $name (TEMPORARY_DIRECTORY, OBSOLETE_DIRECTORY) {
-	$path = $self->{path} . "/" . $name;
-	_special_mkdir($path, $self->{umask}) unless -d $path;
-    }
-    # so far so good...
-    return($self);
+    $message = sprintf($message, @arguments) if @arguments;
+    $message =~ s/\s+$//;
+    die(caller() . ": $message\n");
 }
 
 #
-# return the number of elements in the queue, regardless of their state
+# make sure a module is loaded
 #
 
-sub count : method {
-    my($self) = @_;
-    my($count, $name, @list, $subdirs);
+sub _require ($) {
+    my($module) = @_;
 
-    $count = 0;
-    # get the list of existing directories
-    foreach $name (_special_getdir($self->{path}, "strict")) {
-	push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
+    return if $_LoadedModule{$module};
+    eval("require $module");
+    if ($@) {
+        $@ =~ s/\s+at\s.+?\sline\s+\d+\.?$//;
+        _fatal("failed to load %s: %s", $module, $@);
+    } else {
+        $_LoadedModule{$module} = 1;
     }
-    # count sub-directories
-    foreach $name (@list) {
-	$subdirs = _subdirs($self->{path} . "/" . $name);
-	$count += $subdirs if $subdirs;
-    }
-    # that's all
-    return($count);
 }
 
 #
-# check if an element is locked:
-#  - this is best effort only as it may change while we test (only locking is atomic)
-#  - if given a time, only return true on locks older than this time (needed by purge)
+# return the name of a new element to (try to) use with:
+#  - 8 hexadecimal digits for the number of seconds since the Epoch
+#  - 5 hexadecimal digits for the microseconds part
+#  - 1 hexadecimal digit from the pid to further reduce name collisions
+#
+# properties:
+#  - fixed size (14 hexadecimal digits)
+#  - likely to be unique (with very high-probability)
+#  - can be lexically sorted
+#  - ever increasing (for a given process)
+#  - reasonably compact
+#  - matching $_ElementRegexp
 #
 
-# version using nlink (faster)
-
-sub _is_locked_nlink : method {
-    my($self, $name, $time) = @_;
-    my($path, @stat);
-
-    $path = $self->{path} . "/" . $name;
-    @stat = lstat($path);
-    unless (@stat) {
-	_fatal("cannot lstat(%s): %s", $path, $!) unless $! == ENOENT;
-	# RACE: this path does not exist (anymore)
-	return(0);
-    }
-    # locking increases nlink so...
-    return(0) unless $stat[ST_NLINK] > 2;
-    # check age if time is given
-    return(0) if defined($time) and $stat[ST_MTIME] >= $time;
-    # so far so good but we double check that the proper directory does exist
-    return(-d $path . "/" . LOCKED_DIRECTORY);
-}
-
-# version not using nlink (slower)
-
-sub _is_locked_nonlink : method {
-    my($self, $name, $time) = @_;
-    my($path, @stat);
-
-    $path = $self->{path} . "/" . $name;
-    return(0) unless -d $path . "/" . LOCKED_DIRECTORY;
-    return(1) unless defined($time);
-    @stat = lstat($path);
-    unless (@stat) {
-	_fatal("cannot lstat(%s): %s", $path, $!) unless $! == ENOENT;
-	# RACE: this path does not exist (anymore)
-	return(0);
-    }
-    return($stat[ST_MTIME] < $time);
-}
-
-# use the right version (we cannot rely on hard links on DOS-like systems)
-
-if ($^O =~ /^(cygwin|dos|MSWin32)$/) {
-    *_is_locked = \&_is_locked_nonlink;
-} else {
-    *_is_locked = \&_is_locked_nlink;
+sub _name () {
+    return(sprintf("%08x%05x%01x", Time::HiRes::gettimeofday(), $$ % 16));
 }
 
 #
-# lock an element:
+# create a directory in adversary conditions:
 #  - return true on success
-#  - return false in case the element could not be locked (in permissive mode)
-#
-# note:
-#  - locking can fail:
-#     - if the element has been locked by somebody else (EEXIST)
-#     - if the element has been removed by somebody else (ENOENT)
-#  - if the optional second argument is true, it is not an error if
-#    the element cannot be locked (= permissive mode), this is the default
-#    as one usually cannot be sure that nobody else will try to lock it
-#  - the directory's mtime will change automatically (after a successful mkdir()),
-#    this will later be used to detect stalled locks
+#  - return false if the directory already exists
+#  - die in case of any other error
+#  - handle an optional umask
 #
 
-sub lock : method {
-    my($self, $element, $permissive) = @_;
-    my($path, $oldumask, $success);
+sub _special_mkdir ($$) {
+    my($path, $umask) = @_;
+    my($oldumask, $success);
 
-    _check_element($element);
-    $permissive = 1 unless defined($permissive);
-    $path = $self->{path} . "/" . $element . "/" . LOCKED_DIRECTORY;
-    if (defined($self->{umask})) {
-	$oldumask = umask($self->{umask});
+    if (defined($umask)) {
+	$oldumask = umask($umask);
 	$success = mkdir($path);
 	umask($oldumask);
     } else {
 	$success = mkdir($path);
     }
-    unless ($success) {
-	if ($permissive) {
-	    # RACE: the locked directory already exists
-	    return(0) if $! == EEXIST;
-	    # RACE: the element directory does not exist anymore
-	    return(0) if $! == ENOENT;
-	}
-	# otherwise this is unexpected...
-	_fatal("cannot mkdir(%s): %s", $path, $!);
-    }
-    $path = $self->{path} . "/" . $element;
-    unless (lstat($path)) {
-	if ($permissive) {
-	    # RACE: the element directory does not exist anymore
-	    # (this can happen if an other process locked & removed the element
-	    #  while our mkdir() was in progress... yes, this can happen!)
-	    return(0) if $! == ENOENT;
-	}
-	# otherwise this is unexpected...
-	_fatal("cannot lstat(%s): %s", $path, $!);
-    }
-    # so far so good
-    return(1);
+    return(1) if $success;
+    _fatal("cannot mkdir(%s): %s", $path, $!) unless $! == EEXIST and -d $path;
+    # RACE: someone else may have created it at the the same time
+    return(0);
 }
 
 #
-# unlock an element:
+# delete a directory in adversary conditions:
 #  - return true on success
-#  - return false in case the element could not be unlocked (in permissive mode)
-#
-# note:
-#  - unlocking can fail:
-#     - if the element has been unlocked by somebody else (ENOENT)
-#     - if the element has been removed by somebody else (ENOENT)
-#  - if the optional second argument is true, it is not an error if
-#    the element cannot be unlocked (= permissive mode), this is _not_ the default
-#    as unlock() should normally be called by whoever locked the element
+#  - return false if the path does not exist (anymore)
+#  - die in case of any other error
 #
 
-sub unlock : method {
-    my($self, $element, $permissive) = @_;
-    my($path);
+sub _special_rmdir ($) {
+    my($path) = @_;
 
-    _check_element($element);
-    $path = $self->{path} . "/" . $element . "/" . LOCKED_DIRECTORY;
-    unless (rmdir($path)) {
-	if ($permissive) {
-	    # RACE: the element directory or its lock does not exist anymore
-	    return(0) if $! == ENOENT;
-	}
-	# otherwise this is unexpected...
-	_fatal("cannot rmdir(%s): %s", $path, $!);
-    }
-    # so far so good
-    return(1);
+    return(1) if rmdir($path);
+    _fatal("cannot rmdir(%s): %s", $path, $!) unless $! == ENOENT;
+    # RACE: someone else may have deleted it at the the same time
+    return(0);
 }
 
 #
-# remove a locked element from the queue
+# get the contents of a directory in adversary conditions:
+#  - return the list of names without . and ..
+#  - return an empty list if the directory does not exist (anymore),
+#    unless the optional second argument is true
+#  - die in case of any other error
 #
 
-sub remove : method {
-    my($self, $element) = @_;
-    my($temp, $name, $path);
+sub _special_getdir ($;$) {
+    my($path, $strict) = @_;
+    my($dh, @list);
 
-    _check_element($element);
-    _fatal("cannot remove %s: not locked", $element) unless $self->_is_locked($element);
-    # move the element out of its intermediate directory
+    if (opendir($dh, $path)) {
+	@list = grep($_ !~ /^\.\.?$/, readdir($dh));
+	closedir($dh) or _fatal("cannot closedir(%s): %s", $path, $!);
+	return(@list);
+    }
+    _fatal("cannot opendir(%s): %s", $path, $!)
+	unless $! == ENOENT and not $strict;
+    # RACE: someone else may have deleted it at the the same time
+    return();
+}
+
+#
+# read from a file:
+#  - return a reference to the file contents
+#  - handle optional UTF-8 decoding
+#
+
+sub _file_read ($$) {
+    my($path, $utf8) = @_;
+    my($fh, $data, $done);
+
+    sysopen($fh, $path, O_RDONLY)
+	or _fatal("cannot sysopen(%s, O_RDONLY): %s", $path, $!);
+    if ($utf8) {
+	binmode($fh, ":encoding(utf8)")
+	    or _fatal("cannot binmode(%s, :encoding(utf8)): %s", $path, $!);
+    } else {
+	binmode($fh)
+	    or _fatal("cannot binmode(%s): %s", $path, $!);
+    }
+    $data = "";
+    $done = -1;
+    while ($done) {
+	$done = sysread($fh, $data, SYSBUFSIZE, length($data));
+	_fatal("cannot sysread(%s): %s", $path, $!) unless defined($done);
+    }
+    close($fh) or _fatal("cannot close(%s): %s", $path, $!);
+    return(\$data);
+}
+
+#
+# create a file:
+#  - return the file handle on success
+#  - tolerate some errors unless the optional third argument is true
+#  - die in case of any other error
+#  - handle an optional umask
+#
+
+sub _file_create ($$;$) {
+    my($path, $umask, $strict) = @_;
+    my($fh, $oldumask, $success);
+
+    if (defined($umask)) {
+	$oldumask = umask($umask);
+	$success = sysopen($fh, $path, O_WRONLY|O_CREAT|O_EXCL);
+	umask($oldumask);
+    } else {
+	$success = sysopen($fh, $path, O_WRONLY|O_CREAT|O_EXCL);
+    }
+    return($fh) if $success;
+    _fatal("cannot sysopen(%s, O_WRONLY|O_CREAT|O_EXCL): %s", $path, $!)
+	unless ($! == EEXIST or $! == ENOENT) and not $strict;
+    # RACE: someone else may have created the file (EEXIST)
+    # RACE: the containing directory may be mising (ENOENT)
+    return(0);
+}
+
+#
+# write to a file:
+#  - the file must not exist beforehand
+#  - this function must be given a reference to the file contents
+#  - handle an optional umask
+#  - handle optional UTF-8 decoding
+#
+
+sub _file_write ($$$$) {
+    my($path, $utf8, $umask, $dataref) = @_;
+    my($fh, $length, $offset, $done);
+
+    $fh = _file_create($path, $umask, "strict");
+    if ($utf8) {
+	binmode($fh, ":encoding(utf8)")
+	    or _fatal("cannot binmode(%s, :encoding(utf8)): %s", $path, $!);
+    } else {
+	binmode($fh)
+	    or _fatal("cannot binmode(%s): %s", $path, $!);
+    }
+    $length = length($$dataref);
+    $offset = 0;
+    while ($length) {
+	$done = syswrite($fh, $$dataref, SYSBUFSIZE, $offset);
+	_fatal("cannot syswrite(%s): %s", $path, $!) unless defined($done);
+	$length -= $done;
+	$offset += $done;
+    }
+    close($fh) or _fatal("cannot close(%s): %s", $path, $!);
+}
+
+#+++############################################################################
+#                                                                              #
+# Base Class                                                                   #
+#                                                                              #
+#---############################################################################
+
+#
+# object creator (wrapper)
+#
+
+sub new : method {
+    my($class, %option) = @_;
+    my($subclass);
+
+    $option{type} ||= "Normal";
+    $subclass = $class . "::" . $option{type};
+    _require($subclass);
+    delete($option{type});
+    return($subclass->new(%option));
+}
+
+#
+# object creator (inherited)
+#
+
+sub _new : method {
+    my($class, %option) = @_;
+    my($self, $path, $name, @stat);
+
+    # path is mandatory
+    _fatal("missing option: path") unless defined($option{path});
+    _fatal("not a directory: %s", $option{path})
+	if -e $option{path} and not -d _;
+    # build the object
+    $self = {
+	path => $option{path},	# toplevel path
+	dirs => [],		# cached list of intermediate directories
+	elts => [],		# cached list of elements
+    };
+    # handle the umask option
+    if (defined($option{umask})) {
+	_fatal("invalid umask: %s", $option{umask})
+	    unless $option{umask} =~ /^\d+$/ and $option{umask} < 512;
+	$self->{umask} = $option{umask};
+    }
+    # create the toplevel directory if needed
+    $path = "";
+    foreach $name (split(/\/+/, $self->{path})) {
+	$path .= $name . "/";
+	_special_mkdir($path, $self->{umask}) unless -d $path;
+    }
+    # store the queue unique identifier
+    if ($^O =~ /^(cygwin|dos|MSWin32)$/) {
+	# we cannot rely on inode number :-(
+	$self->{id} = $self->{path};
+    } else {
+	# device number plus inode number should be unique
+	@stat = stat($self->{path});
+	_fatal("cannot stat(%s): %s", $self->{path}, $!) unless @stat;
+	$self->{id} = $stat[ST_DEV] . ":" . $stat[ST_INO];
+    }
+    # that's it!
+    bless($self, $class);
+    return($self);
+}
+
+#
+# copy/clone the object
+#
+# note:
+#  - the main purpose is to copy/clone the iterator cached state
+#  - the other attributes are _not_ cloned but this is not a problem
+#    since they should not change
+#
+
+sub copy : method {
+    my($self) = @_;
+    my($copy);
+
+    $copy = { %$self };
+    $copy->{dirs} = [];
+    $copy->{elts} = [];
+    bless($copy, ref($self));
+    return($copy);
+}
+
+#
+# return the toplevel path of the queue
+#
+
+sub path : method {
+    my($self) = @_;
+
+    return($self->{path});
+}
+
+#
+# return a unique identifier for the queue
+#
+
+sub id : method {
+    my($self) = @_;
+
+    return($self->{id});
+}
+
+#
+# return the name of the next element in the queue, using cached information
+#
+
+sub next : method {
+    my($self) = @_;
+    my($dir, $name, @list);
+
+    return(shift(@{ $self->{elts} })) if @{ $self->{elts} };
+    while (@{ $self->{dirs} }) {
+	$dir = shift(@{ $self->{dirs} });
+	foreach $name (_special_getdir($self->{path} . "/" . $dir)) {
+	    push(@list, $1) if $name =~ /^($_ElementRegexp)$/o; # untaint
+	}
+	next unless @list;
+	$self->{elts} = [ map("$dir/$_", sort(@list)) ];
+	return(shift(@{ $self->{elts} }));
+    }
+    return("");
+}
+
+#
+# return the first element in the queue and cache information about the next ones
+#
+
+sub first : method {
+    my($self) = @_;
+    my($name, @list);
+
+    foreach $name (_special_getdir($self->{path}, "strict")) {
+	push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
+    }
+    $self->{dirs} = [ sort(@list) ];
+    $self->{elts} = [];
+    return($self->next());
+}
+
+#
+# touch an element to indicate that it is still being used
+#
+
+sub touch : method {
+    my($self, $element) = @_;
+    my($time, $path);
+
+    $time = time();
     $path = $self->{path} . "/" . $element;
-    while (1) {
-	$temp = $self->{path} . "/" . OBSOLETE_DIRECTORY . "/" . _name();
-	rename($path, $temp) and last;
-	_fatal("cannot rename(%s, %s): %s", $path, $temp, $!)
-	    unless $! == ENOTEMPTY or $! == EEXIST;
-	# RACE: the target directory was already present...
-    }
-    # remove the data files
-    foreach $name (_special_getdir($temp, "strict")) {
-	next if $name eq LOCKED_DIRECTORY;
-	_fatal("unexpected file in %s: %s", $temp, $name)
-	    unless $name =~ /^($_FileRegexp)$/o;
-	$path = $temp . "/" . $1; # untaint
-	unlink($path) and next;
-	_fatal("cannot unlink(%s): %s", $path, $!);
-    }
-    # remove the locked directory
-    $path = $temp . "/" . LOCKED_DIRECTORY;
-    while (1) {
-	rmdir($path) or _fatal("cannot rmdir(%s): %s", $path, $!);
-	rmdir($temp) and return;
-	_fatal("cannot rmdir(%s): %s", $temp, $!)
-	    unless $! == ENOTEMPTY or $! == EEXIST;
-	# RACE: this can happen if an other process managed to lock this element
-	# while it was being removed (see the comment in the lock() method)
-	# so we try to remove the lock again and again...
-    }
-}
-
-#
-# get an element from a locked element
-#
-
-sub get : method {
-    my($self, $element) = @_;
-    my(%data, $name, $path, $ref);
-
-    _fatal("unknown schema") unless $self->{type};
-    _check_element($element);
-    _fatal("cannot get %s: not locked", $element) unless $self->_is_locked($element);
-    foreach $name (keys(%{ $self->{type} })) {
-	$path = "$self->{path}/$element/$name";
-	unless (lstat($path)) {
-	    _fatal("cannot lstat(%s): %s", $path, $!) unless $! == ENOENT;
-	    if ($self->{mandatory}{$name}) {
-		_fatal("missing data file: %s", $path);
-	    } else {
-		next;
-	    }
-	}
-	if ($self->{type}{$name} =~ /^(binary|string)$/) {
-	    $ref = _file_read($path, $self->{type}{$name} eq "string");
-	    $data{$name} = $self->{ref}{$name} ? $ref : $$ref;
-	} elsif ($self->{type}{$name} eq "table") {
-	    $data{$name} = _string2hash(_file_read($path, 1));
-	} else {
-	    _fatal("unexpected data type: %s", $self->{type}{$name});
-	}
-    }
-    return(\%data) unless wantarray();
-    return(%data);
-}
-
-#
-# return the name of the intermediate directory that can be used for insertion:
-#  - if there is none, an initial one will be created
-#  - if it is full, a new one will be created
-#  - in any case the name will match $_DirectoryRegexp
-#
-
-sub _insertion_directory : method {
-    my($self) = @_;
-    my(@list, $name, $subdirs);
-
-    # get the list of existing directories
-    foreach $name (_special_getdir($self->{path}, "strict")) {
-	push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
-    }
-    # handle the case with no directories yet
-    unless (@list) {
-	$name = sprintf("%08x", 0);
-	_special_mkdir($self->{path} . "/" . $name, $self->{umask});
-	return($name);
-    }
-    # check the last directory
-    @list = sort(@list);
-    $name = pop(@list);
-    $subdirs = _subdirs($self->{path} . "/" . $name);
-    if (defined($subdirs)) {
-	return($name) if $subdirs < $self->{maxelts};
-	# this last directory is now full... create a new one
-    } else {
-	# RACE: at this point, the directory does not exist anymore, so it
-	# must have been purged after we listed the directory contents...
-	# we do not try to do more and simply create a new directory
-    }
-    # we need a new directory
-    $name = sprintf("%08x", hex($name) + 1);
-    _special_mkdir($self->{path} . "/" . $name, $self->{umask});
-    return($name);
-}
-
-#
-# add a new element to the queue and return its name
-#
-# note:
-#  - the destination directory must _not_ be created beforehand as it would
-#    be seen as a valid (but empty) element directory by an other process,
-#    we therefor use rename() from a temporary directory
-#  - syswrite() used in _file_write() may die with a "Wide character"
-#    "severe warning", we trap it here to provide better information
-#
-
-sub add : method {
-    my($self, @data) = @_;
-    my($data, $temp, $dir, $name, $path, $ref, $utf8);
-
-    _fatal("unknown schema") unless $self->{type};
-    if (@data == 1) {
-	$data = $data[0];
-    } else {
-	$data = { @data };
-    }
-    while (1) {
-	$temp = $self->{path} . "/" . TEMPORARY_DIRECTORY . "/" . _name();
-	last if _special_mkdir($temp, $self->{umask});
-    }
-    foreach $name (keys(%$data)) {
-	_fatal("unexpected data: %s", $name) unless $self->{type}{$name};
-	if ($self->{type}{$name} =~ /^(binary|string)$/) {
-	    if ($self->{ref}{$name}) {
-		_fatal("unexpected %s data in %s: %s",
-		       $self->{type}{$name}, $name, $data->{$name})
-		    unless ref($data->{$name}) eq "SCALAR";
-		$ref = $data->{$name};
-	    } else {
-		_fatal("unexpected %s data in %s: %s",
-		       $self->{type}{$name}, $name, $data->{$name})
-		    if ref($data->{$name});
-		$ref = \$data->{$name};
-	    }
-	    $utf8 = $self->{type}{$name} eq "string";
-	} elsif ($self->{type}{$name} eq "table") {
-	    _fatal("unexpected %s data in %s: %s", $self->{type}{$name}, $name, $data->{$name})
-		unless ref($data->{$name}) eq "HASH";
-	    $ref = _hash2string($data->{$name});
-	    $utf8 = 1;
-	} else {
-	    _fatal("unexpected data type in %s: %s", $name, $self->{type}{$name});
-	}
-	eval {
-	    _file_write("$temp/$name", $utf8, $self->{umask}, $ref);
-	};
-	if ($@) {
-	    if ($@ =~ /^Wide character in /) {
-		_fatal("unexpected wide character in %s: %s", $name, $data->{$name});
-	    } else {
-		die($@);
-	    }
-	}
-    }
-    foreach $name (keys(%{ $self->{mandatory} })) {
-	_fatal("missing mandatory data: %s", $name)
-	    unless defined($data->{$name});
-    }
-    $dir = $self->_insertion_directory();
-    while (1) {
-	$name = $dir . "/" . _name();
-	$path = $self->{path} . "/" . $name;
-	rename($temp, $path) and return($name);
-	_fatal("cannot rename(%s, %s): %s", $temp, $path, $!)
-	    unless $! == ENOTEMPTY or $! == EEXIST;
-	# RACE: the target directory was already present...
-    }
-}
-
-#
-# return the list of volatile (i.e. temporary or obsolete) directories
-#
-
-sub _volatile : method {
-    my($self) = @_;
-    my(@list, $name);
-
-    foreach $name (_special_getdir($self->{path} . "/" . TEMPORARY_DIRECTORY)) {
-	push(@list, TEMPORARY_DIRECTORY . "/" . $1)
-	    if $name =~ /^($_ElementRegexp)$/o; # untaint
-    }
-    foreach $name (_special_getdir($self->{path} . "/" . OBSOLETE_DIRECTORY)) {
-	push(@list, OBSOLETE_DIRECTORY . "/" . $1)
-	    if $name =~ /^($_ElementRegexp)$/o; # untaint
-    }
-    return(@list);
-}
-
-#
-# purge the queue:
-#  - delete unused intermediate directories
-#  - delete too old temporary directories
-#  - unlock too old locked directories
-#
-# note: this uses first()/next() to iterate so this will reset the cursor
-#
-
-sub purge : method {
-    my($self, %option) = @_;
-    my(@list, $name, $path, $subdirs, $oldtime, $file, $fpath);
-
-    # check options
-    $option{maxtemp} = 300 unless defined($option{maxtemp});
-    $option{maxlock} = 600 unless defined($option{maxlock});
-    foreach $name (keys(%option)) {
-	_fatal("unexpected option: %s", $name)
-	    unless $name =~ /^(maxtemp|maxlock)$/;
-	_fatal("invalid %s: %s", $name, $option{$name})
-	    unless $option{$name} =~ /^\d+$/;
-    }
-    # get the list of intermediate directories
-    @list = ();
-    foreach $name (_special_getdir($self->{path}, "strict")) {
-	push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
-    }
-    @list = sort(@list);
-    # try to purge all but last one
-    if (@list > 1) {
-	pop(@list);
-	foreach $name (@list) {
-	    $path = $self->{path} . "/" . $name;
-	    $subdirs = _subdirs($path);
-	    next if $subdirs or not defined($subdirs);
-	    _special_rmdir($path);
-	}
-    }
-    # remove the volatile directories which are too old
-    if ($option{maxtemp}) {
-	$oldtime = time() - $option{maxtemp};
-	foreach $name ($self->_volatile()) {
-	    $path = $self->{path} . "/" . $name;
-	    next unless _older($path, $oldtime);
-	    warn("* removing too old volatile element: $name\n");
-	    foreach $file (_special_getdir($path)) {
-		next if $file eq LOCKED_DIRECTORY;
-		$fpath = "$path/$file";
-		unlink($fpath) and next;
-		_fatal("cannot unlink(%s): %s", $fpath, $!) unless $! == ENOENT;
-	    }
-	    _special_rmdir($path . "/" . LOCKED_DIRECTORY);
-	    _special_rmdir($path);
-	}
-    }
-    # iterate to find abandoned locked entries
-    if ($option{maxlock}) {
-	$oldtime = time() - $option{maxlock};
-	$name = $self->first();
-	while ($name) {
-	    next unless $self->_is_locked($name, $oldtime);
-	    warn("* removing too old locked element: $name\n");
-	    $self->unlock($name, 1);
-	} continue {
-	    $name = $self->next();
-	}
-    }
+    utime($time, $time, $path)
+	or _fatal("cannot utime(%d, %d, %s): %s", $time, $time, $path, $!);
 }
 
 1;
@@ -694,21 +456,12 @@ Directory::Queue - object oriented interface to a directory based queue
   use Directory::Queue;
 
   #
-  # simple schema:
-  #  - there must be a "body" which is a string
-  #  - there can be a "header" which is a table/hash
-  #
-
-  $schema = { "body" => "string", "header" => "table?" };
-  $queuedir = "/tmp/test";
-
-  #
   # sample producer
   #
 
-  $dirq = Directory::Queue->new(path => $queuedir, schema => $schema);
+  $dirq = Directory::Queue->new(path => "/tmp/test");
   foreach $count (1 .. 100) {
-      $name = $dirq->add(body => "element $count\n", header => \%ENV);
+      $name = $dirq->add(... some data ...);
       printf("# added element %d as %s\n", $count, $name);
   }
 
@@ -716,73 +469,127 @@ Directory::Queue - object oriented interface to a directory based queue
   # sample consumer (one pass only)
   #
 
-  $dirq = Directory::Queue->new(path => $queuedir, schema => $schema);
+  $dirq = Directory::Queue->new(path => "/tmp/test");
   for ($name = $dirq->first(); $name; $name = $dirq->next()) {
       next unless $dirq->lock($name);
       printf("# reading element %s\n", $name);
-      %data = $dirq->get($name);
-      # one can use $data{body} and $data{header} here...
+      $data = $dirq->get($name);
       # one could use $dirq->unlock($name) to only browse the queue...
       $dirq->remove($name);
   }
 
-  #
-  # looping consumer (sleeping to avoid using all CPU time)
-  #
-
-  $dirq = Directory::Queue->new(path => $queuedir, schema => $schema);
-  while (1) {
-      sleep(1) unless $dirq->count();
-      for ($name = $dirq->first(); $name; $name = $dirq->next()) {
-          ... same as above ...
-      }
-  }
-
 =head1 DESCRIPTION
 
-The goal of this module is to offer a simple queue system using the
-underlying filesystem for storage, security and to prevent race
-conditions via atomic operations. It focuses on simplicity, robustness
-and scalability.
+The goal of this module is to offer a queue system using the underlying
+filesystem for storage, security and to prevent race conditions via atomic
+operations. It focuses on simplicity, robustness and scalability.
 
 This module allows multiple concurrent readers and writers to interact
-with the same queue. A Python implementation of the same algorithm is
+with the same queue. A Python implementation of the same algorithms is
 available at http://pypi.python.org/pypi/dirq/ so readers and writers
 can be written in different programming languages.
 
-There is no knowledge of priority within a queue. If multiple
-priorities are needed, multiple queues should be used.
+There is no knowledge of priority within a queue. If multiple priorities
+are needed, multiple queues should be used.
 
 =head1 TERMINOLOGY
 
-An element is something that contains one or more pieces of data. A
-simple string may be an element but more complex schemas can also be
-used, see the L</SCHEMA> section for more information.
+An element is something that contains one or more pieces of data. With
+L<Directory::Queue::Simple> queues, an element can only contain one binary
+string. With L<Directory::Queue::Normal> queues, more complex data schemas
+can be used.
 
-A queue is a "best effort FIFO" collection of elements.
+A queue is a "best effort" FIFO (First In - First Out) collection of
+elements.
 
 It is very hard to guarantee pure FIFO behavior with multiple writers
 using the same queue. Consider for instance:
 
 =over
 
-=item * Writer1: calls the add() method
+=item *
 
-=item * Writer2: calls the add() method
+Writer1: calls the add() method
 
-=item * Writer2: the add() method returns
+=item *
 
-=item * Writer1: the add() method returns
+Writer2: calls the add() method
+
+=item *
+
+Writer2: the add() method returns
+
+=item *
+
+Writer1: the add() method returns
 
 =back
 
 Who should be first in the queue, Writer1 or Writer2?
 
-For simplicity, this implementation provides only "best effort FIFO",
+For simplicity, this implementation provides only "best effort" FIFO,
 i.e. there is a very high probability that elements are processed in
 FIFO order but this is not guaranteed. This is achieved by using a
 high-resolution timer and having elements sorted by the time their
 final directory gets created.
+
+=head1 QUEUE TYPES
+
+Different queue types are supported. More detailed information can be found
+in the modules implementing these types:
+
+=over
+
+=item *
+
+L<Directory::Queue::Normal>
+
+=item *
+
+L<Directory::Queue::Simple>
+
+=item *
+
+L<Directory::Queue::Null>
+
+=back
+
+Compared to L<Directory::Queue::Normal>, L<Directory::Queue::Simple>:
+
+=over
+
+=item *
+
+is simpler
+
+=item *
+
+is faster
+
+=item *
+
+uses less space on disk
+
+=item *
+
+can be given existing files to store
+
+=item *
+
+does not support schemas
+
+=item *
+
+can only store and retrieve binary strings
+
+=item *
+
+is not compatible (at filesystem level) with Directory::Queue::Normal
+
+=back
+
+L<Directory::Queue::Null> is special: it is a kind of black hole with
+the same API as the other directory queues.
 
 =head1 LOCKING
 
@@ -812,88 +619,42 @@ locked.
 
 =head1 CONSTRUCTOR
 
-The new() method can be used to create a Directory::Queue object that
-will later be used to interact with the queue. The following
-attributes are supported:
+The new() method of this module can be used to create a Directory::Queue
+object that will later be used to interact with the queue. It can have a
+C<type> attribute specifying the queue type to use. If not specified, the
+type defaults to C<Normal>.
+
+This method is however only a wrapper around the constructor of the
+underlying module implementing the functionality. So:
+
+  $dirq = Directory::Queue->new(type => Foo, ... options ...);
+
+is identical to:
+
+  $dirq = Directory::Queue::Foo->new(... options ...);
+
+=head1 INHERITANCE
+
+Regardless of how the directory queue object is created, it inherits from
+the C<Directory::Queue> class. You can therefore test if an object is a
+directory queue (of any kind) by using:
+
+  if ($object->isa("Directory::Queue")) ...
+
+=head1 BASE METHODS
+
+Here are the methods available in the base class and inherited by all
+directory queue implementations:
 
 =over
 
-=item path
+=item new(PATH)
 
-the queue toplevel directory (mandatory)
-
-=item umask
-
-the umask to use when creating files and directories
-(default: use the running process' umask)
-
-=item maxelts
-
-the maximum number of elements that an intermediate directory can hold
-(default: 16,000)
-
-=item schema
-
-the schema defining how to interpret user supplied data
-(mandatory if elements are added or read)
-
-=back
-
-=head1 SCHEMA
-
-The schema defines how user supplied data is stored in the queue. It
-is only required by the add() and get() methods.
-
-The schema must be a reference to a hash containing key/value pairs.
-
-The key must contain only alphanumerical characters. It identifies the
-piece of data and will be used as file name when storing the data
-inside the element directory.
-
-The value represents the type of the given piece of data. It can be:
-
-=over
-
-=item binary
-
-the data is a binary string (i.e. a sequence of bytes), it will be
-stored directly in a plain file with no further encoding
-
-=item string
-
-the data is a text string (i.e. a sequence of characters), it will be
-UTF-8 encoded before being stored in a file
-
-=item table
-
-the data is a reference to a hash of text strings, it will be
-serialized and UTF-8 encoded before being stored in a file
-
-=back
-
-By default, all pieces of data are mandatory. If you append a question
-mark to the type, this piece of data will be marked as optional. See
-the comments in the L</SYNOPSIS> section for an example.
-
-By default, string or binary data is used directly. If you append an
-asterisk to the type, the data that you add or get will be by
-reference. This can be useful to avoid string copies of large amounts
-of data.
-
-=head1 METHODS
-
-The following methods are available:
-
-=over
-
-=item new()
-
-return a new Directory::Queue object (class method)
+return a new object (class method)
 
 =item copy()
 
-return a copy of the object; this can be useful to have independent
-iterators on the same queue
+return a copy of the object
 
 =item path()
 
@@ -902,10 +663,6 @@ return the queue toplevel path
 =item id()
 
 return a unique identifier for the queue
-
-=item count()
-
-return the number of elements in the queue
 
 =item first()
 
@@ -917,110 +674,12 @@ return an empty string if the queue is empty
 return the next element in the queue, incrementing the iterator;
 return an empty string if there is no next element
 
-=item add(DATA)
-
-add the given data (a hash or hash reference) to the queue and return
-the corresponding element name; the schema must be known and the data
-must conform to it
-
-=item lock(ELEMENT[, PERMISSIVE])
-
-attempt to lock the given element and return true on success; if the
-PERMISSIVE option is true (which is the default), it is not a fatal
-error if the element cannot be locked and false is returned
-
-=item unlock(ELEMENT[, PERMISSIVE])
-
-attempt to unlock the given element and return true on success; if the
-PERMISSIVE option is true (which is I<not> the default), it is not a
-fatal error if the element cannot be unlocked and false is returned
-
 =item touch(ELEMENT)
 
-update the access and modification times on the element's directory to
-indicate that it is still being used; this is useful for elements that
-are locked for long periods of time (see the purge() method)
-
-=item remove(ELEMENT)
-
-remove the given element (which must be locked) from the queue
-
-=item get(ELEMENT)
-
-get the data from the given element (which must be locked) and return
-basically the same hash as what add() got (in list context, the hash
-is returned directly while in scalar context, the hash reference is
-returned instead); the schema must be knownand the data must conform
-to it
-
-=item purge([OPTIONS])
-
-purge the queue by removing unused intermediate directories, removing
-too old temporary elements and unlocking too old locked elements (aka
-staled locks); note: this can take a long time on queues with many
-elements; OPTIONS can be:
-
-=over
-
-=item maxtemp
-
-maximum time for a temporary element (in seconds, default 300);
-if set to 0, temporary elements will not be removed
-
-=item maxlock
-
-maximum time for a locked element (in seconds, default 600);
-if set to 0, locked elements will not be unlocked
+update the element's access and modification times to indicate that it
+is still being used
 
 =back
-
-=back
-
-=head1 DIRECTORY STRUCTURE
-
-All the directories holding the elements and all the files holding the
-data pieces are located under the queue toplevel directory. This
-directory can contain:
-
-=over
-
-=item temporary
-
-the directory holding temporary elements, i.e. the elements being added
-
-=item obsolete
-
-the directory holding obsolete elements, i.e. the elements being removed
-
-=item I<NNNNNNNN>
-
-an intermediate directory holding elements; I<NNNNNNNN> is an 8-digits
-long hexadecimal number
-
-=back
-
-In any of the above directories, an element is stored as a single
-directory with a 14-digits long hexadecimal name I<SSSSSSSSMMMMMR> where:
-
-=over
-
-=item I<SSSSSSSS>
-
-represents the number of seconds since the Epoch
-
-=item I<MMMMM>
-
-represents the microsecond part of the time since the Epoch
-
-=item I<R>
-
-is a random digit used to reduce name collisions
-
-=back
-
-Finally, inside an element directory, the different pieces of data are
-stored into different files, named according to the schema. A locked
-element contains in addition a directory named C<locked>.
 
 =head1 SECURITY
 
@@ -1039,8 +698,15 @@ toplevel directory world-writable (i.e. umask=0). Then, the
 permissions of the toplevel directory itself (e.g. group-writable) are
 enough to control who can access the queue.
 
+=head1 SEE ALSO
+
+L<Directory::Queue::Normal>,
+L<Directory::Queue::Null>,
+L<Directory::Queue::Set>,
+L<Directory::Queue::Simple>.
+
 =head1 AUTHOR
 
 Lionel Cons L<http://cern.ch/lionel.cons>
 
-Copyright CERN 2010-2011
+Copyright CERN 2010-2012

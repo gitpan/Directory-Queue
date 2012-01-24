@@ -13,14 +13,14 @@
 package Directory::Queue::Set;
 use strict;
 use warnings;
-our $VERSION  = "1.4";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.7 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.5";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.9 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
 #
 
-use Directory::Queue::Base qw(_fatal);
+use Directory::Queue qw(_fatal);
 
 #
 # return true if the given thing is a Directory::Queue object
@@ -29,7 +29,7 @@ use Directory::Queue::Base qw(_fatal);
 sub _isdq ($) {
     my($thing) = @_;
 
-    return(ref($thing) && $thing->isa("Directory::Queue::Base"));
+    return(ref($thing) && $thing->isa("Directory::Queue"));
 }
 
 #
@@ -171,8 +171,9 @@ This module can be used to put different queues into a set and browse
 them as one queue. The elements from all queues are merged together
 and sorted independently from the queue they belong to.
 
-It works both with L<Directory::Queue> and L<Directory::Queue::Simple>
-queues. Queues of different types can even be mixed.
+This works both with L<Directory::Queue::Normal> and
+L<Directory::Queue::Simple> queues. Queues of different types can even
+be mixed.
 
 =head1 METHODS
 
@@ -209,8 +210,12 @@ return the total number of elements in all the queues of the set
 
 =back
 
+=head1 SEE ALSO
+
+L<Directory::Queue>.
+
 =head1 AUTHOR
 
 Lionel Cons L<http://cern.ch/lionel.cons>
 
-Copyright CERN 2010-2011
+Copyright CERN 2010-2012

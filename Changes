@@ -1,5 +1,10 @@
 Revision history for Directory-Queue:
 
+1.5	Tue Jan 24 2012
+	* Changed the class hierarchy while preserving backward compatibility
+	  (Directory::Queue is now only the base/front-end class).
+	* Added Directory::Queue::Null which is a kind of black hole.
+
 1.4	Tue Dec  6 2011
 	* Documentation cleanup, now using http://pypi.python.org/pypi/dirq/.
 	* Packaging cleanup.
