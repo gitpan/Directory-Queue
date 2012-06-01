@@ -1,5 +1,9 @@
 Revision history for Directory-Queue:
 
+???	???
+	* Better handle race conditions in Directory::Queue::Simple's lock().
+	* Improved I/O speed for binary files.
+
 1.5	Tue Jan 24 2012
 	* Changed the class hierarchy while preserving backward compatibility
 	  (Directory::Queue is now only the base/front-end class).

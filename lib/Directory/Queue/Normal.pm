@@ -13,8 +13,8 @@
 package Directory::Queue::Normal;
 use strict;
 use warnings;
-our $VERSION  = "1.5";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.3 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.5_1";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.6 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
@@ -360,11 +360,11 @@ sub lock : method {
     }
     $path = $self->{path} . "/" . $element;
     unless (lstat($path)) {
-	if ($permissive) {
+	if ($permissive and $! == ENOENT) {
 	    # RACE: the element directory does not exist anymore
 	    # (this can happen if an other process locked & removed the element
 	    #  while our mkdir() was in progress... yes, this can happen!)
-	    return(0) if $! == ENOENT;
+	    return(0);
 	}
 	# otherwise this is unexpected...
 	_fatal("cannot lstat(%s): %s", $path, $!);
@@ -418,7 +418,7 @@ sub remove : method {
     # move the element out of its intermediate directory
     $path = $self->{path} . "/" . $element;
     while (1) {
-	$temp = $self->{path} . "/" . OBSOLETE_DIRECTORY . "/" . _name();
+	$temp = $self->{path} . "/" . OBSOLETE_DIRECTORY . "/" . _name($self->{rndhex});
 	rename($path, $temp) and last;
 	_fatal("cannot rename(%s, %s): %s", $path, $temp, $!)
 	    unless $! == ENOTEMPTY or $! == EEXIST;
@@ -468,10 +468,14 @@ sub get : method {
 	    }
 	}
 	if ($self->{type}{$name} =~ /^(binary|string)$/) {
-	    $ref = _file_read($path, $self->{type}{$name} eq "string");
+	    if ($self->{type}{$name} eq "string") {
+		$ref = _file_read_utf8($path);
+	    } else {
+		$ref = _file_read_bin($path);
+	    }
 	    $data{$name} = $self->{ref}{$name} ? $ref : $$ref;
 	} elsif ($self->{type}{$name} eq "table") {
-	    $data{$name} = _string2hash(_file_read($path, 1));
+	    $data{$name} = _string2hash(_file_read_utf8($path));
 	} else {
 	    _fatal("unexpected data type: %s", $self->{type}{$name});
 	}
@@ -541,7 +545,7 @@ sub add : method {
 	$data = { @data };
     }
     while (1) {
-	$temp = $self->{path} . "/" . TEMPORARY_DIRECTORY . "/" . _name();
+	$temp = $self->{path} . "/" . TEMPORARY_DIRECTORY . "/" . _name($self->{rndhex});
 	last if _special_mkdir($temp, $self->{umask});
     }
     foreach $name (keys(%$data)) {
@@ -584,7 +588,7 @@ sub add : method {
     }
     $dir = $self->_insertion_directory();
     while (1) {
-	$name = $dir . "/" . _name();
+	$name = $dir . "/" . _name($self->{rndhex});
 	$path = $self->{path} . "/" . $name;
 	rename($temp, $path) and return($name);
 	_fatal("cannot rename(%s, %s): %s", $temp, $path, $!)

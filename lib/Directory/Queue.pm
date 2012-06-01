@@ -13,8 +13,8 @@
 package Directory::Queue;
 use strict;
 use warnings;
-our $VERSION  = "1.5";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.39 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.5_1";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.41 $ =~ /(\d+)\.(\d+)/);
 
 #
 # export control
@@ -27,7 +27,7 @@ our(@ISA, @EXPORT, @EXPORT_OK, %EXPORT_TAGS);
 @EXPORT_OK = qw(_fatal _name SYSBUFSIZE);
 %EXPORT_TAGS = (
     "DIR"  => [qw(_special_mkdir _special_rmdir _special_getdir)],
-    "FILE" => [qw(_file_read _file_create _file_write)],
+    "FILE" => [qw(_file_read_bin _file_read_utf8 _file_create _file_write)],
     "RE"   => [qw($_DirectoryRegexp $_ElementRegexp)],
     "ST"   => [qw(ST_DEV ST_INO ST_NLINK ST_MTIME)],
 );
@@ -61,6 +61,7 @@ our(
 use constant ST_DEV   => 0;  # device
 use constant ST_INO   => 1;  # inode
 use constant ST_NLINK => 3;  # number of hard links
+use constant ST_SIZE  => 7;  # size in bytes
 use constant ST_MTIME => 9;  # time of last modification
 
 #
@@ -120,7 +121,7 @@ sub _require ($) {
 # return the name of a new element to (try to) use with:
 #  - 8 hexadecimal digits for the number of seconds since the Epoch
 #  - 5 hexadecimal digits for the microseconds part
-#  - 1 hexadecimal digit from the pid to further reduce name collisions
+#  - 1 hexadecimal digit from the caller to further reduce name collisions
 #
 # properties:
 #  - fixed size (14 hexadecimal digits)
@@ -131,8 +132,8 @@ sub _require ($) {
 #  - matching $_ElementRegexp
 #
 
-sub _name () {
-    return(sprintf("%08x%05x%01x", Time::HiRes::gettimeofday(), $$ % 16));
+sub _name ($) {
+    return(sprintf("%08x%05x%01x", Time::HiRes::gettimeofday(), $_[0]));
 }
 
 #
@@ -200,24 +201,46 @@ sub _special_getdir ($;$) {
 }
 
 #
-# read from a file:
-#  - return a reference to the file contents
-#  - handle optional UTF-8 decoding
+# read from a binary file:
+#  - return a reference to the file contents (bytes)
+#  - we use stat() to avoid calling sysread() one extra time at EOF
 #
 
-sub _file_read ($$) {
-    my($path, $utf8) = @_;
-    my($fh, $data, $done);
+sub _file_read_bin ($) {
+    my($path) = @_;
+    my($fh, @stat, $data, $done, $todo);
 
     sysopen($fh, $path, O_RDONLY)
 	or _fatal("cannot sysopen(%s, O_RDONLY): %s", $path, $!);
-    if ($utf8) {
-	binmode($fh, ":encoding(utf8)")
-	    or _fatal("cannot binmode(%s, :encoding(utf8)): %s", $path, $!);
-    } else {
-	binmode($fh)
-	    or _fatal("cannot binmode(%s): %s", $path, $!);
+    binmode($fh)
+	or _fatal("cannot binmode(%s): %s", $path, $!);
+    @stat = stat($fh)
+	or _fatal("cannot stat(%s): %s", $path, $!);
+    $todo = $stat[ST_SIZE];
+    $data = "";
+    while ($todo) {
+	$done = sysread($fh, $data, $todo, length($data));
+	_fatal("cannot sysread(%s): %s", $path, $!) unless defined($done);
+	$todo -= $done;
     }
+    close($fh) or _fatal("cannot close(%s): %s", $path, $!);
+    return(\$data);
+}
+
+#
+# read from a UTF-8 encoded file:
+#  - return a reference to the file contents (characters)
+#  - we do not use stat() as the file size is not the string length
+#
+
+sub _file_read_utf8 ($) {
+    my($path) = @_;
+    my($fh, $data, $done, $todo);
+
+    sysopen($fh, $path, O_RDONLY)
+	or _fatal("cannot sysopen(%s, O_RDONLY): %s", $path, $!);
+    binmode($fh, ":encoding(utf8)")
+	or _fatal("cannot binmode(%s, :encoding(utf8)): %s", $path, $!);
     $data = "";
     $done = -1;
     while ($done) {
@@ -325,6 +348,14 @@ sub _new : method {
 	dirs => [],		# cached list of intermediate directories
 	elts => [],		# cached list of elements
     };
+    # handle the rndhex option
+    if (defined($option{rndhex})) {
+	_fatal("invalid rndhex: %s", $option{rndhex})
+	    unless $option{rndhex} =~ /^\d+$/ and $option{rndhex} < 16;
+	$self->{rndhex} = $option{rndhex};
+    } else {
+	$self->{rndhex} = int(rand(16));
+    }
     # handle the umask option
     if (defined($option{umask})) {
 	_fatal("invalid umask: %s", $option{umask})

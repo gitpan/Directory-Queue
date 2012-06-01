@@ -3,8 +3,12 @@
 use strict;
 use warnings;
 use Directory::Queue;
-use Test::More tests => 48;
+use Test::More tests => 128;
 use File::Temp qw(tempdir);
+
+use constant STR_ASCII   =>  join("", grep(/^[[:print:]]$/, map(chr($_ ^ 123), 0 .. 255)));
+use constant STR_ISO     => "Théâtre Français";
+use constant STR_UNICODE => "is \x{263A}?";
 
 sub check_hash ($$$) {
     my($hash1, $hash2, $text) = @_;
@@ -27,7 +31,7 @@ sub check_elt ($$$$) {
     @list = $dq->get($elt);
     is(scalar(@list), 2, "$text - get() 1");
     is($list[0], "table", "$text - get() 2");
-    check_hash($data, $list[1], "$text - get()");
+    check_hash($list[1], $data, "$text - get()");
     # scalar
     $scalar = $dq->get($elt);
     is(ref($scalar), "HASH", "$text - get{} 1");
@@ -51,5 +55,10 @@ our($tmpdir, $dq);
 $tmpdir = tempdir(CLEANUP => 1);
 $dq = Directory::Queue->new(path => $tmpdir, schema => { table => "table" });
 check_data({}, $dq, "empty");
-check_data({ "" => "", "abc" => "", "" => "def"}, $dq, "zero");
+check_data({"" => "", "abc" => "", " " => "def"}, $dq, "zero");
 check_data({foo => 1, bar => 2}, $dq, "normal");
+check_data({STR_ASCII => STR_ASCII}, $dq, "ascii");
+check_data({STR_ISO => STR_ISO}, $dq, "iso");
+check_data({STR_UNICODE => STR_UNICODE}, $dq, "unicode");
+check_data({STR_ISO => STR_UNICODE, STR_UNICODE => STR_ASCII, STR_ASCII => STR_ISO}, $dq, "all");
+check_data({"\n" => "\t", "\t" => "\\", "\\" => "\n"}, $dq, "weird");

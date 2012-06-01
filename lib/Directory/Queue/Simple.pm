@@ -13,8 +13,8 @@
 package Directory::Queue::Simple;
 use strict;
 use warnings;
-our $VERSION  = "1.5";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.8 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.5_1";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.11 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
@@ -87,7 +87,7 @@ sub _add_data ($$) {
 
     $dir = _add_dir($self);
     while (1) {
-	$name = _name();
+	$name = _name($self->{rndhex});
 	$tmp = $self->{path} . "/" . $dir . "/" . $name . TEMPORARY_SUFFIX;
 	$fh = _file_create($tmp, $self->{umask});
 	last if $fh;
@@ -110,7 +110,7 @@ sub _add_path ($$$) {
     my($name, $new);
 
     while (1) {
-	$name = _name();
+	$name = _name($self->{rndhex});
 	$new = $self->{path} . "/" . $dir . "/" . $name;
 	# N.B. we use link() + unlink() to make sure $new is never overwritten
 	if (link($tmp, $new)) {
@@ -157,13 +157,13 @@ sub add_path : method {
 sub get : method {
     my($self, $name) = @_;
 
-    return(${ _file_read($self->{path} . "/" . $name . LOCKED_SUFFIX, 0) });
+    return(${ _file_read_bin($self->{path} . "/" . $name . LOCKED_SUFFIX) });
 }
 
 sub get_ref : method {
     my($self, $name) = @_;
 
-    return(_file_read($self->{path} . "/" . $name . LOCKED_SUFFIX, 0));
+    return(_file_read_bin($self->{path} . "/" . $name . LOCKED_SUFFIX));
 }
 
 sub get_path : method {
@@ -185,15 +185,25 @@ sub lock : method {
     $permissive = 1 unless defined($permissive);
     $path = $self->{path} . "/" . $name;
     $lock = $path . LOCKED_SUFFIX;
-    if (link($path, $lock)) {
-	# we also touch the element to indicate the lock time
-	$time = time();
-	utime($time, $time, $path)
-	    or _fatal("cannot utime(%d, %d, %s): %s", $time, $time, $path, $!);
-	return(1);
+    unless (link($path, $lock)) {
+	return(0) if $permissive and ($! == EEXIST or $! == ENOENT);
+	_fatal("cannot link(%s, %s): %s", $path, $lock, $!);
     }
-    return(0) if $permissive and ($! == EEXIST or $! == ENOENT);
-    _fatal("cannot link(%s, %s): %s", $path, $lock, $!);
+    # we also touch the element to indicate the lock time
+    $time = time();
+    unless (utime($time, $time, $path)) {
+	if ($permissive and $! == ENOENT) {
+	    # RACE: the element file does not exist anymore
+	    # (this can happen if an other process locked & removed the element
+	    #  while our link() was in progress... yes, this can happen!)
+	    unlink($lock);
+	    return(0);
+	}
+	# otherwise this is unexpected...
+	_fatal("cannot utime(%d, %d, %s): %s", $time, $time, $path, $!);
+    }
+    # so far so good
+    return(1);
 }
 
 #
