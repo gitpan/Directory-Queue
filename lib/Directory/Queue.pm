@@ -13,7 +13,7 @@
 package Directory::Queue;
 use strict;
 use warnings;
-our $VERSION  = "1.5_1";
+our $VERSION  = "1.6";
 our $REVISION = sprintf("%d.%02d", q$Revision: 1.41 $ =~ /(\d+)\.(\d+)/);
 
 #

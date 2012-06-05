@@ -1,6 +1,6 @@
 Revision history for Directory-Queue:
 
-???	???
+1.6	Tue Jun  5 2012
 	* Better handle race conditions in Directory::Queue::Simple's lock().
 	* Improved I/O speed for binary files.
 
