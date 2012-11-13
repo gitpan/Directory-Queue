@@ -13,30 +13,15 @@
 package Directory::Queue;
 use strict;
 use warnings;
-our $VERSION  = "1.6";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.41 $ =~ /(\d+)\.(\d+)/);
-
-#
-# export control
-#
-
-use Exporter;
-our(@ISA, @EXPORT, @EXPORT_OK, %EXPORT_TAGS);
-@ISA = qw(Exporter);
-@EXPORT = qw();
-@EXPORT_OK = qw(_fatal _name SYSBUFSIZE);
-%EXPORT_TAGS = (
-    "DIR"  => [qw(_special_mkdir _special_rmdir _special_getdir)],
-    "FILE" => [qw(_file_read_bin _file_read_utf8 _file_create _file_write)],
-    "RE"   => [qw($_DirectoryRegexp $_ElementRegexp)],
-    "ST"   => [qw(ST_DEV ST_INO ST_NLINK ST_MTIME)],
-);
-Exporter::export_tags();
+our $VERSION  = "1.7";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.44 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
 #
 
+use No::Worries::Die qw(dief);
+use No::Worries::Export qw(export_control);
 use POSIX qw(:errno_h :fcntl_h);
 use Time::HiRes qw();
 
@@ -89,18 +74,6 @@ $_ElementRegexp   = qr/[0-9a-f]{14}/;
 #---############################################################################
 
 #
-# report a fatal error with a sprintf() API
-#
-
-sub _fatal ($@) {
-    my($message, @arguments) = @_;
-
-    $message = sprintf($message, @arguments) if @arguments;
-    $message =~ s/\s+$//;
-    die(caller() . ": $message\n");
-}
-
-#
 # make sure a module is loaded
 #
 
@@ -108,10 +81,10 @@ sub _require ($) {
     my($module) = @_;
 
     return if $_LoadedModule{$module};
-    eval("require $module");
+    eval("require $module"); ## no critic 'ProhibitStringyEval'
     if ($@) {
         $@ =~ s/\s+at\s.+?\sline\s+\d+\.?$//;
-        _fatal("failed to load %s: %s", $module, $@);
+        dief("failed to load %s: %s", $module, $@);
     } else {
         $_LoadedModule{$module} = 1;
     }
@@ -149,14 +122,14 @@ sub _special_mkdir ($$) {
     my($oldumask, $success);
 
     if (defined($umask)) {
-	$oldumask = umask($umask);
-	$success = mkdir($path);
-	umask($oldumask);
+        $oldumask = umask($umask);
+        $success = mkdir($path);
+        umask($oldumask);
     } else {
-	$success = mkdir($path);
+        $success = mkdir($path);
     }
     return(1) if $success;
-    _fatal("cannot mkdir(%s): %s", $path, $!) unless $! == EEXIST and -d $path;
+    dief("cannot mkdir(%s): %s", $path, $!) unless $! == EEXIST and -d $path;
     # RACE: someone else may have created it at the the same time
     return(0);
 }
@@ -172,7 +145,7 @@ sub _special_rmdir ($) {
     my($path) = @_;
 
     return(1) if rmdir($path);
-    _fatal("cannot rmdir(%s): %s", $path, $!) unless $! == ENOENT;
+    dief("cannot rmdir(%s): %s", $path, $!) unless $! == ENOENT;
     # RACE: someone else may have deleted it at the the same time
     return(0);
 }
@@ -190,12 +163,12 @@ sub _special_getdir ($;$) {
     my($dh, @list);
 
     if (opendir($dh, $path)) {
-	@list = grep($_ !~ /^\.\.?$/, readdir($dh));
-	closedir($dh) or _fatal("cannot closedir(%s): %s", $path, $!);
-	return(@list);
+        @list = grep($_ !~ /^\.\.?$/, readdir($dh));
+        closedir($dh) or dief("cannot closedir(%s): %s", $path, $!);
+        return(@list);
     }
-    _fatal("cannot opendir(%s): %s", $path, $!)
-	unless $! == ENOENT and not $strict;
+    dief("cannot opendir(%s): %s", $path, $!)
+        unless $! == ENOENT and not $strict;
     # RACE: someone else may have deleted it at the the same time
     return();
 }
@@ -211,19 +184,19 @@ sub _file_read_bin ($) {
     my($fh, @stat, $data, $done, $todo);
 
     sysopen($fh, $path, O_RDONLY)
-	or _fatal("cannot sysopen(%s, O_RDONLY): %s", $path, $!);
+        or dief("cannot sysopen(%s, O_RDONLY): %s", $path, $!);
     binmode($fh)
-	or _fatal("cannot binmode(%s): %s", $path, $!);
+        or dief("cannot binmode(%s): %s", $path, $!);
     @stat = stat($fh)
-	or _fatal("cannot stat(%s): %s", $path, $!);
+        or dief("cannot stat(%s): %s", $path, $!);
     $todo = $stat[ST_SIZE];
     $data = "";
     while ($todo) {
-	$done = sysread($fh, $data, $todo, length($data));
-	_fatal("cannot sysread(%s): %s", $path, $!) unless defined($done);
-	$todo -= $done;
+        $done = sysread($fh, $data, $todo, length($data));
+        dief("cannot sysread(%s): %s", $path, $!) unless defined($done);
+        $todo -= $done;
     }
-    close($fh) or _fatal("cannot close(%s): %s", $path, $!);
+    close($fh) or dief("cannot close(%s): %s", $path, $!);
     return(\$data);
 }
 
@@ -238,16 +211,16 @@ sub _file_read_utf8 ($) {
     my($fh, $data, $done, $todo);
 
     sysopen($fh, $path, O_RDONLY)
-	or _fatal("cannot sysopen(%s, O_RDONLY): %s", $path, $!);
+        or dief("cannot sysopen(%s, O_RDONLY): %s", $path, $!);
     binmode($fh, ":encoding(utf8)")
-	or _fatal("cannot binmode(%s, :encoding(utf8)): %s", $path, $!);
+        or dief("cannot binmode(%s, :encoding(utf8)): %s", $path, $!);
     $data = "";
     $done = -1;
     while ($done) {
-	$done = sysread($fh, $data, SYSBUFSIZE, length($data));
-	_fatal("cannot sysread(%s): %s", $path, $!) unless defined($done);
+        $done = sysread($fh, $data, SYSBUFSIZE, length($data));
+        dief("cannot sysread(%s): %s", $path, $!) unless defined($done);
     }
-    close($fh) or _fatal("cannot close(%s): %s", $path, $!);
+    close($fh) or dief("cannot close(%s): %s", $path, $!);
     return(\$data);
 }
 
@@ -264,15 +237,15 @@ sub _file_create ($$;$) {
     my($fh, $oldumask, $success);
 
     if (defined($umask)) {
-	$oldumask = umask($umask);
-	$success = sysopen($fh, $path, O_WRONLY|O_CREAT|O_EXCL);
-	umask($oldumask);
+        $oldumask = umask($umask);
+        $success = sysopen($fh, $path, O_WRONLY|O_CREAT|O_EXCL);
+        umask($oldumask);
     } else {
-	$success = sysopen($fh, $path, O_WRONLY|O_CREAT|O_EXCL);
+        $success = sysopen($fh, $path, O_WRONLY|O_CREAT|O_EXCL);
     }
     return($fh) if $success;
-    _fatal("cannot sysopen(%s, O_WRONLY|O_CREAT|O_EXCL): %s", $path, $!)
-	unless ($! == EEXIST or $! == ENOENT) and not $strict;
+    dief("cannot sysopen(%s, O_WRONLY|O_CREAT|O_EXCL): %s", $path, $!)
+        unless ($! == EEXIST or $! == ENOENT) and not $strict;
     # RACE: someone else may have created the file (EEXIST)
     # RACE: the containing directory may be mising (ENOENT)
     return(0);
@@ -292,21 +265,21 @@ sub _file_write ($$$$) {
 
     $fh = _file_create($path, $umask, "strict");
     if ($utf8) {
-	binmode($fh, ":encoding(utf8)")
-	    or _fatal("cannot binmode(%s, :encoding(utf8)): %s", $path, $!);
+        binmode($fh, ":encoding(utf8)")
+            or dief("cannot binmode(%s, :encoding(utf8)): %s", $path, $!);
     } else {
-	binmode($fh)
-	    or _fatal("cannot binmode(%s): %s", $path, $!);
+        binmode($fh)
+            or dief("cannot binmode(%s): %s", $path, $!);
     }
-    $length = length($$dataref);
+    $length = length(${ $dataref });
     $offset = 0;
     while ($length) {
-	$done = syswrite($fh, $$dataref, SYSBUFSIZE, $offset);
-	_fatal("cannot syswrite(%s): %s", $path, $!) unless defined($done);
-	$length -= $done;
-	$offset += $done;
+        $done = syswrite($fh, ${ $dataref }, SYSBUFSIZE, $offset);
+        dief("cannot syswrite(%s): %s", $path, $!) unless defined($done);
+        $length -= $done;
+        $offset += $done;
     }
-    close($fh) or _fatal("cannot close(%s): %s", $path, $!);
+    close($fh) or dief("cannot close(%s): %s", $path, $!);
 }
 
 #+++############################################################################
@@ -323,10 +296,10 @@ sub new : method {
     my($class, %option) = @_;
     my($subclass);
 
-    $option{type} ||= "Normal";
-    $subclass = $class . "::" . $option{type};
+    $option{"type"} ||= "Normal";
+    $subclass = $class . "::" . $option{"type"};
     _require($subclass);
-    delete($option{type});
+    delete($option{"type"});
     return($subclass->new(%option));
 }
 
@@ -336,47 +309,47 @@ sub new : method {
 
 sub _new : method {
     my($class, %option) = @_;
-    my($self, $path, $name, @stat);
+    my($self, $path, @stat);
 
     # path is mandatory
-    _fatal("missing option: path") unless defined($option{path});
-    _fatal("not a directory: %s", $option{path})
-	if -e $option{path} and not -d _;
+    dief("missing option: path") unless defined($option{"path"});
+    dief("not a directory: %s", $option{"path"})
+        if -e $option{"path"} and not -d _;
     # build the object
     $self = {
-	path => $option{path},	# toplevel path
-	dirs => [],		# cached list of intermediate directories
-	elts => [],		# cached list of elements
+        "path" => $option{"path"}, # toplevel path
+        "dirs" => [],              # cached list of intermediate directories
+        "elts" => [],              # cached list of elements
     };
     # handle the rndhex option
-    if (defined($option{rndhex})) {
-	_fatal("invalid rndhex: %s", $option{rndhex})
-	    unless $option{rndhex} =~ /^\d+$/ and $option{rndhex} < 16;
-	$self->{rndhex} = $option{rndhex};
+    if (defined($option{"rndhex"})) {
+        dief("invalid rndhex: %s", $option{"rndhex"})
+            unless $option{"rndhex"} =~ /^\d+$/ and $option{"rndhex"} < 16;
+        $self->{"rndhex"} = $option{"rndhex"};
     } else {
-	$self->{rndhex} = int(rand(16));
+        $self->{"rndhex"} = int(rand(16));
     }
     # handle the umask option
-    if (defined($option{umask})) {
-	_fatal("invalid umask: %s", $option{umask})
-	    unless $option{umask} =~ /^\d+$/ and $option{umask} < 512;
-	$self->{umask} = $option{umask};
+    if (defined($option{"umask"})) {
+        dief("invalid umask: %s", $option{"umask"})
+            unless $option{"umask"} =~ /^\d+$/ and $option{"umask"} < 512;
+        $self->{"umask"} = $option{"umask"};
     }
     # create the toplevel directory if needed
     $path = "";
-    foreach $name (split(/\/+/, $self->{path})) {
-	$path .= $name . "/";
-	_special_mkdir($path, $self->{umask}) unless -d $path;
+    foreach my $name (split(/\/+/, $self->{"path"})) {
+        $path .= $name . "/";
+        _special_mkdir($path, $self->{"umask"}) unless -d $path;
     }
     # store the queue unique identifier
     if ($^O =~ /^(cygwin|dos|MSWin32)$/) {
-	# we cannot rely on inode number :-(
-	$self->{id} = $self->{path};
+        # we cannot rely on inode number :-(
+        $self->{"id"} = $self->{"path"};
     } else {
-	# device number plus inode number should be unique
-	@stat = stat($self->{path});
-	_fatal("cannot stat(%s): %s", $self->{path}, $!) unless @stat;
-	$self->{id} = $stat[ST_DEV] . ":" . $stat[ST_INO];
+        # device number plus inode number should be unique
+        @stat = stat($self->{"path"});
+        dief("cannot stat(%s): %s", $self->{"path"}, $!) unless @stat;
+        $self->{"id"} = $stat[ST_DEV] . ":" . $stat[ST_INO];
     }
     # that's it!
     bless($self, $class);
@@ -396,9 +369,9 @@ sub copy : method {
     my($self) = @_;
     my($copy);
 
-    $copy = { %$self };
-    $copy->{dirs} = [];
-    $copy->{elts} = [];
+    $copy = { %{ $self } };
+    $copy->{"dirs"} = [];
+    $copy->{"elts"} = [];
     bless($copy, ref($self));
     return($copy);
 }
@@ -410,7 +383,7 @@ sub copy : method {
 sub path : method {
     my($self) = @_;
 
-    return($self->{path});
+    return($self->{"path"});
 }
 
 #
@@ -420,26 +393,26 @@ sub path : method {
 sub id : method {
     my($self) = @_;
 
-    return($self->{id});
+    return($self->{"id"});
 }
 
 #
 # return the name of the next element in the queue, using cached information
 #
 
-sub next : method {
+sub next : method { ## no critic 'ProhibitBuiltinHomonyms'
     my($self) = @_;
-    my($dir, $name, @list);
+    my($dir, @list);
 
-    return(shift(@{ $self->{elts} })) if @{ $self->{elts} };
-    while (@{ $self->{dirs} }) {
-	$dir = shift(@{ $self->{dirs} });
-	foreach $name (_special_getdir($self->{path} . "/" . $dir)) {
-	    push(@list, $1) if $name =~ /^($_ElementRegexp)$/o; # untaint
-	}
-	next unless @list;
-	$self->{elts} = [ map("$dir/$_", sort(@list)) ];
-	return(shift(@{ $self->{elts} }));
+    return(shift(@{ $self->{"elts"} })) if @{ $self->{"elts"} };
+    while (@{ $self->{"dirs"} }) {
+        $dir = shift(@{ $self->{"dirs"} });
+        foreach my $name (_special_getdir($self->{"path"} . "/" . $dir)) {
+            push(@list, $1) if $name =~ /^($_ElementRegexp)$/o; # untaint
+        }
+        next unless @list;
+        $self->{"elts"} = [ map("$dir/$_", sort(@list)) ];
+        return(shift(@{ $self->{"elts"} }));
     }
     return("");
 }
@@ -450,13 +423,13 @@ sub next : method {
 
 sub first : method {
     my($self) = @_;
-    my($name, @list);
+    my(@list);
 
-    foreach $name (_special_getdir($self->{path}, "strict")) {
-	push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
+    foreach my $name (_special_getdir($self->{"path"}, "strict")) {
+        push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
     }
-    $self->{dirs} = [ sort(@list) ];
-    $self->{elts} = [];
+    $self->{"dirs"} = [ sort(@list) ];
+    $self->{"elts"} = [];
     return($self->next());
 }
 
@@ -469,9 +442,26 @@ sub touch : method {
     my($time, $path);
 
     $time = time();
-    $path = $self->{path} . "/" . $element;
+    $path = $self->{"path"} . "/" . $element;
     utime($time, $time, $path)
-	or _fatal("cannot utime(%d, %d, %s): %s", $time, $time, $path, $!);
+        or dief("cannot utime(%d, %d, %s): %s", $time, $time, $path, $!);
+}
+
+#
+# export control
+#
+
+sub import : method {
+    my($pkg, %exported);
+
+    $pkg = shift(@_);
+    foreach my $name (
+        qw(SYSBUFSIZE ST_MTIME ST_NLINK _name $_DirectoryRegexp $_ElementRegexp
+           _file_create _file_read_bin _file_read_utf8 _file_write
+           _special_getdir _special_mkdir _special_rmdir)) {
+        $exported{$name}++;
+    }
+    export_control(scalar(caller()), $pkg, \%exported, @_);
 }
 
 1;

@@ -13,14 +13,15 @@
 package Directory::Queue::Null;
 use strict;
 use warnings;
-our $VERSION  = "1.6";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.3 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.7";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.5 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
 #
 
-use Directory::Queue qw(_fatal);
+use Directory::Queue qw();
+use No::Worries::Die qw(dief);
 
 #
 # inheritance
@@ -49,7 +50,7 @@ sub first : method {
     return("");
 }
 
-sub next : method {
+sub next : method { ## no critic 'ProhibitBuiltinHomonyms'
     return("");
 }
 
@@ -71,7 +72,7 @@ sub add_ref : method {
 sub add_path : method {
     my($self, $path) = @_;
 
-    unlink($path) or _fatal("cannot unlink(%s): %s", $path, $!);
+    unlink($path) or dief("cannot unlink(%s): %s", $path, $!);
     return("");
 }
 
@@ -80,31 +81,31 @@ sub add_path : method {
 #
 
 sub touch : method {
-    _fatal("unsupported method: touch()");
+    dief("unsupported method: touch()");
 }
 
-sub lock : method {
-    _fatal("unsupported method: lock()");
+sub lock : method { ## no critic 'ProhibitBuiltinHomonyms'
+    dief("unsupported method: lock()");
 }
 
 sub unlock : method {
-    _fatal("unsupported method: unlock()");
+    dief("unsupported method: unlock()");
 }
 
 sub remove : method {
-    _fatal("unsupported method: remove()");
+    dief("unsupported method: remove()");
 }
 
 sub get : method {
-    _fatal("unsupported method: get()");
+    dief("unsupported method: get()");
 }
 
 sub get_ref : method {
-    _fatal("unsupported method: get_ref()");
+    dief("unsupported method: get_ref()");
 }
 
 sub get_path : method {
-    _fatal("unsupported method: get_path()");
+    dief("unsupported method: get_path()");
 }
 
 1;

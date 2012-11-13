@@ -4,6 +4,8 @@ META.yml			Module meta-data (added by MakeMaker)
 Makefile.PL
 README
 VERSION
+eg/README
+eg/dqt.pl
 lib/Directory/Queue.pm
 lib/Directory/Queue/Normal.pm
 lib/Directory/Queue/Null.pm

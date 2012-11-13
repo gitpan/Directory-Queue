@@ -13,14 +13,14 @@
 package Directory::Queue::Set;
 use strict;
 use warnings;
-our $VERSION  = "1.6";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.9 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.7";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.11 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
 #
 
-use Directory::Queue qw(_fatal);
+use No::Worries::Die qw(dief);
 
 #
 # return true if the given thing is a Directory::Queue object
@@ -52,14 +52,14 @@ sub new : method {
 
 sub add : method {
     my($self, @list) = @_;
-    my($dirq, $id);
+    my($id);
 
-    foreach $dirq (@list) {
-	_fatal("not a Directory::Queue object: %s", $dirq) unless _isdq($dirq);
-	$id = $dirq->id();
-	_fatal("duplicate queue in set: %s", $dirq->path())
-	    if $self->{dirq}{$id};
-	$self->{dirq}{$id} = $dirq->copy();
+    foreach my $dirq (@list) {
+        dief("not a Directory::Queue object: %s", $dirq) unless _isdq($dirq);
+        $id = $dirq->id();
+        dief("duplicate queue in set: %s", $dirq->path())
+            if $self->{dirq}{$id};
+        $self->{dirq}{$id} = $dirq->copy();
     }
     # reset our iterator
     delete($self->{elt});
@@ -71,14 +71,14 @@ sub add : method {
 
 sub remove : method {
     my($self, @list) = @_;
-    my($dirq, $id);
+    my($id);
 
-    foreach $dirq (@list) {
-	_fatal("not a Directory::Queue object: %s", $dirq) unless _isdq($dirq);
-	$id = $dirq->id();
-	_fatal("missing queue in set: %s", $dirq->path())
-	    unless $self->{dirq}{$id};
-	delete($self->{dirq}{$id});
+    foreach my $dirq (@list) {
+        dief("not a Directory::Queue object: %s", $dirq) unless _isdq($dirq);
+        $id = $dirq->id();
+        dief("missing queue in set: %s", $dirq->path())
+            unless $self->{dirq}{$id};
+        delete($self->{dirq}{$id});
     }
     # reset our iterator
     delete($self->{elt});
@@ -88,20 +88,20 @@ sub remove : method {
 # get the next element of the queue set
 #
 
-sub next : method {
+sub next : method { ## no critic 'ProhibitBuiltinHomonyms'
     my($self) = @_;
-    my($id, $name, $min_elt, $min_id);
+    my($name, $min_elt, $min_id);
 
     return() unless $self->{elt};
-    foreach $id (keys(%{ $self->{elt} })) {
-	$name = substr($self->{elt}{$id}, -14);
-	next if defined($min_elt) and $min_elt le $name;
-	$min_elt = $name;
-	$min_id = $id;
+    foreach my $id (keys(%{ $self->{elt} })) {
+        $name = substr($self->{elt}{$id}, -14);
+        next if defined($min_elt) and $min_elt le $name;
+        $min_elt = $name;
+        $min_id = $id;
     }
     unless ($min_id) {
-	delete($self->{elt});
-	return();
+        delete($self->{elt});
+        return();
     }
     $min_elt = $self->{elt}{$min_id};
     $self->{elt}{$min_id} = $self->{dirq}{$min_id}->next();
@@ -115,13 +115,12 @@ sub next : method {
 
 sub first : method {
     my($self) = @_;
-    my($id);
 
     return() unless $self->{dirq};
     delete($self->{elt});
-    foreach $id (keys(%{ $self->{dirq} })) {
-	$self->{elt}{$id} = $self->{dirq}{$id}->first();
-	delete($self->{elt}{$id}) unless $self->{elt}{$id};
+    foreach my $id (keys(%{ $self->{dirq} })) {
+        $self->{elt}{$id} = $self->{dirq}{$id}->first();
+        delete($self->{elt}{$id}) unless $self->{elt}{$id};
     }
     return($self->next());
 }
@@ -132,12 +131,12 @@ sub first : method {
 
 sub count : method {
     my($self) = @_;
-    my($count, $id);
+    my($count);
 
     return(0) unless $self->{dirq};
     $count = 0;
-    foreach $id (keys(%{ $self->{dirq} })) {
-	$count += $self->{dirq}{$id}->count();
+    foreach my $id (keys(%{ $self->{dirq} })) {
+        $count += $self->{dirq}{$id}->count();
     }
     return($count);
 }

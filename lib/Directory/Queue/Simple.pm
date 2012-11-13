@@ -13,14 +13,16 @@
 package Directory::Queue::Simple;
 use strict;
 use warnings;
-our $VERSION  = "1.6";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.11 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.7";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.14 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
 #
 
-use Directory::Queue qw(:DIR :FILE :RE :ST _fatal _name SYSBUFSIZE);
+use Directory::Queue qw(_name SYSBUFSIZE ST_MTIME /Regexp/ /file/ /special/);
+use No::Worries::Die qw(dief);
+use No::Worries::Warn qw(warnf);
 use POSIX qw(:errno_h);
 
 #
@@ -45,24 +47,24 @@ use constant LOCKED_SUFFIX => ".lck";
 
 sub new : method {
     my($class, %option) = @_;
-    my($self, $name);
+    my($self);
 
     # default object
     $self = __PACKAGE__->SUPER::_new(%option);
-    foreach $name (qw(path umask)) {
-	delete($option{$name});
+    foreach my $name (qw(path umask)) {
+        delete($option{$name});
     }
     # check granularity
     if (defined($option{granularity})) {
-	_fatal("invalid granularity: %s", $option{granularity})
-	    unless $option{granularity} =~ /^\d+$/;
-	$self->{granularity} = delete($option{granularity});
+        dief("invalid granularity: %s", $option{granularity})
+            unless $option{granularity} =~ /^\d+$/;
+        $self->{granularity} = delete($option{granularity});
     } else {
-	$self->{granularity} = 60; # default
+        $self->{granularity} = 60; # default
     }
     # check unexpected options
-    foreach $name (keys(%option)) {
-	_fatal("unexpected option: %s", $name);
+    foreach my $name (keys(%option)) {
+        dief("unexpected option: %s", $name);
     }
     # so far so good...
     return($self);
@@ -87,21 +89,22 @@ sub _add_data ($$) {
 
     $dir = _add_dir($self);
     while (1) {
-	$name = _name($self->{rndhex});
-	$tmp = $self->{path} . "/" . $dir . "/" . $name . TEMPORARY_SUFFIX;
-	$fh = _file_create($tmp, $self->{umask});
-	last if $fh;
-	_special_mkdir($self->{path} . "/" . $dir, $self->{umask}) if $! == ENOENT;
+        $name = _name($self->{rndhex});
+        $tmp = $self->{path} . "/" . $dir . "/" . $name . TEMPORARY_SUFFIX;
+        $fh = _file_create($tmp, $self->{umask});
+        last if $fh;
+        _special_mkdir($self->{path} . "/" . $dir, $self->{umask})
+            if $! == ENOENT;
     }
-    $length = length($$dataref);
+    $length = length(${ $dataref });
     $offset = 0;
     while ($length) {
-	$done = syswrite($fh, $$dataref, SYSBUFSIZE, $offset);
-	_fatal("cannot syswrite(%s): %s", $tmp, $!) unless defined($done);
-	$length -= $done;
-	$offset += $done;
+        $done = syswrite($fh, ${ $dataref }, SYSBUFSIZE, $offset);
+        dief("cannot syswrite(%s): %s", $tmp, $!) unless defined($done);
+        $length -= $done;
+        $offset += $done;
     }
-    close($fh) or _fatal("cannot close(%s): %s", $tmp, $!);
+    close($fh) or dief("cannot close(%s): %s", $tmp, $!);
     return($dir, $tmp);
 }
 
@@ -110,14 +113,14 @@ sub _add_path ($$$) {
     my($name, $new);
 
     while (1) {
-	$name = _name($self->{rndhex});
-	$new = $self->{path} . "/" . $dir . "/" . $name;
-	# N.B. we use link() + unlink() to make sure $new is never overwritten
-	if (link($tmp, $new)) {
-	    unlink($tmp) or _fatal("cannot unlink(%s): %s", $tmp, $!);
-	    return($dir . "/" . $name);
-	}
-	_fatal("cannot link(%s, %s): %s", $tmp, $new, $!) unless $! == EEXIST;
+        $name = _name($self->{rndhex});
+        $new = $self->{path} . "/" . $dir . "/" . $name;
+        # N.B. we use link() + unlink() to make sure $new is never overwritten
+        if (link($tmp, $new)) {
+            unlink($tmp) or dief("cannot unlink(%s): %s", $tmp, $!);
+            return($dir . "/" . $name);
+        }
+        dief("cannot link(%s, %s): %s", $tmp, $new, $!) unless $! == EEXIST;
     }
 }
 
@@ -178,29 +181,30 @@ sub get_path : method {
 #  - return false in case the element could not be locked (in permissive mode)
 #
 
-sub lock : method {
+sub lock : method {  ## no critic 'ProhibitBuiltinHomonyms'
     my($self, $name, $permissive) = @_;
-    my($path, $lock, $time);
+    my($path, $lock, $time, $ignored);
 
     $permissive = 1 unless defined($permissive);
     $path = $self->{path} . "/" . $name;
     $lock = $path . LOCKED_SUFFIX;
     unless (link($path, $lock)) {
-	return(0) if $permissive and ($! == EEXIST or $! == ENOENT);
-	_fatal("cannot link(%s, %s): %s", $path, $lock, $!);
+        return(0) if $permissive and ($! == EEXIST or $! == ENOENT);
+        dief("cannot link(%s, %s): %s", $path, $lock, $!);
     }
     # we also touch the element to indicate the lock time
     $time = time();
     unless (utime($time, $time, $path)) {
-	if ($permissive and $! == ENOENT) {
-	    # RACE: the element file does not exist anymore
-	    # (this can happen if an other process locked & removed the element
-	    #  while our link() was in progress... yes, this can happen!)
-	    unlink($lock);
-	    return(0);
-	}
-	# otherwise this is unexpected...
-	_fatal("cannot utime(%d, %d, %s): %s", $time, $time, $path, $!);
+        if ($permissive and $! == ENOENT) {
+            # RACE: the element file does not exist anymore
+            # (this can happen if an other process locked & removed the element
+            #  while our link() was in progress... yes, this can happen!
+            #  we do our best and ignore what unlink() returns)
+            $ignored = unlink($lock);
+            return(0);
+        }
+        # otherwise this is unexpected...
+        dief("cannot utime(%d, %d, %s): %s", $time, $time, $path, $!);
     }
     # so far so good
     return(1);
@@ -221,7 +225,7 @@ sub unlock : method {
     $lock = $path . LOCKED_SUFFIX;
     return(1) if unlink($lock);
     return(0) if $permissive and $! == ENOENT;
-    _fatal("cannot unlink(%s): %s", $lock, $!);
+    dief("cannot unlink(%s): %s", $lock, $!);
 }
 
 #
@@ -234,8 +238,8 @@ sub remove : method {
 
     $path = $self->{path} . "/" . $name;
     $lock = $path . LOCKED_SUFFIX;
-    unlink($path) or _fatal("cannot unlink(%s): %s", $path, $!);
-    unlink($lock) or _fatal("cannot unlink(%s): %s", $lock, $!);
+    unlink($path) or dief("cannot unlink(%s): %s", $path, $!);
+    unlink($lock) or dief("cannot unlink(%s): %s", $lock, $!);
 }
 
 #
@@ -244,19 +248,45 @@ sub remove : method {
 
 sub count : method {
     my($self) = @_;
-    my($count, $name, @list);
+    my($count, @list);
 
     $count = 0;
     # get the list of directories
-    foreach $name (_special_getdir($self->{path}, "strict")) {
-	push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
+    foreach my $name (_special_getdir($self->{path}, "strict")) {
+        push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
     }
     # count the elements inside
-    foreach $name (@list) {
-	$count += grep(/^(?:$_ElementRegexp)$/o, _special_getdir($self->{path} . "/" . $name));
+    foreach my $name (@list) {
+        $count += grep(/^(?:$_ElementRegexp)$/o,
+                       _special_getdir($self->{path} . "/" . $name));
     }
     # that's all
     return($count);
+}
+
+#
+# purge an intermediate directory
+#
+
+sub _purge_dir ($$$) {
+    my($dir, $oldtemp, $oldlock) = @_;
+    my($path, @stat);
+
+    foreach my $name (grep(/\./, _special_getdir($dir))) {
+        $path = $dir . "/" . $name;
+        @stat = stat($path);
+        unless (@stat) {
+            dief("cannot stat(%s): %s", $path, $!) unless $! == ENOENT;
+            next;
+        }
+        next if substr($name, -4) eq TEMPORARY_SUFFIX
+            and $stat[ST_MTIME] >= $oldtemp;
+        next if substr($name, -4) eq LOCKED_SUFFIX
+            and $stat[ST_MTIME] >= $oldlock;
+        warnf("removing too old volatile file: %s", $path);
+        next if unlink($path);
+        dief("cannot unlink(%s): %s", $path, $!) unless $! == ENOENT;
+    }
 }
 
 #
@@ -265,50 +295,39 @@ sub count : method {
 
 sub purge : method {
     my($self, %option) = @_;
-    my(@list, $name, $path, $oldtemp, $oldlock, $old, @stat);
+    my(@list, $path, $oldtemp, $oldlock);
 
     # check options
     $option{maxtemp} = 300 unless defined($option{maxtemp});
     $option{maxlock} = 600 unless defined($option{maxlock});
-    foreach $name (keys(%option)) {
-	_fatal("unexpected option: %s", $name)
-	    unless $name =~ /^(maxtemp|maxlock)$/;
-	_fatal("invalid %s: %s", $name, $option{$name})
-	    unless $option{$name} =~ /^\d+$/;
+    foreach my $name (keys(%option)) {
+        dief("unexpected option: %s", $name)
+            unless $name =~ /^(maxtemp|maxlock)$/;
+        dief("invalid %s: %s", $name, $option{$name})
+            unless $option{$name} =~ /^\d+$/;
     }
     # get the list of intermediate directories
     @list = ();
-    foreach $name (_special_getdir($self->{path}, "strict")) {
-	push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
+    foreach my $name (_special_getdir($self->{path}, "strict")) {
+        push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
     }
     # remove the old temporary or locked elements
+    $oldtemp = $oldlock = 0;
     $oldtemp = time() - $option{maxtemp} if $option{maxtemp};
     $oldlock = time() - $option{maxlock} if $option{maxlock};
     if ($oldtemp or $oldlock) {
-	foreach $name (@list) {
-	    $path = $self->{path} . "/" . $name;
-	    foreach $old (grep(/\./, _special_getdir($path))) {
-		@stat = stat($path . "/" . $old);
-		unless (@stat) {
-		    _fatal("cannot stat(%s/%s): %s", $path, $old, $!) unless $! == ENOENT;
-		    next;
-		}
-		next if substr($old, -4) eq TEMPORARY_SUFFIX and $stat[ST_MTIME] >= $oldtemp;
-		next if substr($old, -4) eq LOCKED_SUFFIX    and $stat[ST_MTIME] >= $oldlock;
-		warn("* removing too old volatile file: $path/$old\n");
-		next if unlink($path . "/" . $old);
-		_fatal("cannot unlink(%s/%s): %s", $path, $old, $!) unless $! == ENOENT;
-	    }
-	}
+        foreach my $name (@list) {
+            _purge_dir($self->{path} . "/" . $name, $oldtemp, $oldlock);
+        }
     }
     # try to purge all but the last intermediate directory
-    @list = sort(@list);
     if (@list > 1) {
-	pop(@list);
-	foreach $name (@list) {
-	    $path = $self->{path} . "/" . $name;
-	    _special_rmdir($path) unless _special_getdir($path);
-	}
+        @list = sort(@list);
+        pop(@list);
+        foreach my $name (@list) {
+            $path = $self->{path} . "/" . $name;
+            _special_rmdir($path) unless _special_getdir($path);
+        }
     }
 }
 

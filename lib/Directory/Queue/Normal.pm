@@ -13,14 +13,16 @@
 package Directory::Queue::Normal;
 use strict;
 use warnings;
-our $VERSION  = "1.6";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.6 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.7";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.9 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
 #
 
-use Directory::Queue qw(:DIR :FILE :RE :ST _fatal _name);
+use Directory::Queue qw(_name ST_MTIME ST_NLINK /Regexp/ /file/ /special/);
+use No::Worries::Die qw(dief);
+use No::Worries::Warn qw(warnf);
 use POSIX qw(:errno_h);
 
 #
@@ -47,9 +49,10 @@ use constant LOCKED_DIRECTORY => "locked";
 #
 
 our(
-    $_FileRegexp,	  # regexp matching a file in an element directory
-    %_Byte2Esc,           # byte to escape map
-    %_Esc2Byte,           # escape to byte map
+    $_SubDirs,        # code reference returning the number of sub-directories
+    $_FileRegexp,     # regexp matching a file in an element directory
+    %_Byte2Esc,       # byte to escape map
+    %_Esc2Byte,       # escape to byte map
 );
 
 $_FileRegexp = qr/[0-9a-zA-Z]+/;
@@ -71,16 +74,16 @@ $_FileRegexp = qr/[0-9a-zA-Z]+/;
 
 sub _hash2string ($) {
     my($hash) = @_;
-    my($key, $value, $string);
+    my($value, $string);
 
     $string = "";
-    foreach $key (sort(keys(%$hash))) {
-	$value = $hash->{$key};
-	_fatal("undefined hash value: %s", $key) unless defined($value);
-	_fatal("invalid hash scalar: %s", $value) if ref($value);
-	$key   =~ s/([\x5c\x09\x0a])/$_Byte2Esc{$1}/g;
-	$value =~ s/([\x5c\x09\x0a])/$_Byte2Esc{$1}/g;
-	$string .= $key . "\x09" . $value . "\x0a";
+    foreach my $key (sort(keys(%{ $hash }))) {
+        $value = $hash->{$key};
+        dief("undefined hash value: %s", $key) unless defined($value);
+        dief("invalid hash scalar: %s", $value) if ref($value);
+        $key   =~ s/([\x5c\x09\x0a])/$_Byte2Esc{$1}/g;
+        $value =~ s/([\x5c\x09\x0a])/$_Byte2Esc{$1}/g;
+        $string .= $key . "\x09" . $value . "\x0a";
     }
     return(\$string);
 }
@@ -94,15 +97,17 @@ sub _hash2string ($) {
 
 sub _string2hash ($) {
     my($stringref) = @_;
-    my($line, $key, $value, %hash);
+    my($key, $value, %hash);
 
-    foreach $line (split(/\x0a/, $$stringref)) {
-	_fatal("unexpected hash line: %s", $line)
-	    unless $line =~ /^([^\x09\x0a]*)\x09([^\x09\x0a]*)$/o;
-	($key, $value) = ($1, $2);
-	$key   =~ s/(\\[\\tn])/$_Esc2Byte{$1}/g;
-	$value =~ s/(\\[\\tn])/$_Esc2Byte{$1}/g;
-	$hash{$key} = $value;
+    foreach my $line (split(/\x0a/, ${ $stringref })) {
+        if ($line =~ /^([^\x09\x0a]*)\x09([^\x09\x0a]*)$/o) {
+            ($key, $value) = ($1, $2);
+        } else {
+            dief("unexpected hash line: %s", $line);
+        }
+        $key   =~ s/(\\[\\tn])/$_Esc2Byte{$1}/g;
+        $value =~ s/(\\[\\tn])/$_Esc2Byte{$1}/g;
+        $hash{$key} = $value;
     }
     return(\%hash);
 }
@@ -123,9 +128,9 @@ sub _older ($$) {
 
     @stat = lstat($path);
     unless (@stat) {
-	_fatal("cannot lstat(%s): %s", $path, $!) unless $! == ENOENT;
-	# RACE: this path does not exist (anymore)
-	return(0);
+        dief("cannot lstat(%s): %s", $path, $!) unless $! == ENOENT;
+        # RACE: this path does not exist (anymore)
+        return(0);
     }
     return($stat[ST_MTIME] < $time);
 }
@@ -147,9 +152,9 @@ sub _subdirs_stat ($) {
 
     @stat = lstat($path);
     unless (@stat) {
-	_fatal("cannot lstat(%s): %s", $path, $!) unless $! == ENOENT;
-	# RACE: this path does not exist (anymore)
-	return();
+        dief("cannot lstat(%s): %s", $path, $!) unless $! == ENOENT;
+        # RACE: this path does not exist (anymore)
+        return();
     }
     return($stat[ST_NLINK] - 2);
 }
@@ -167,9 +172,9 @@ sub _subdirs_readdir ($) {
 # use the right version (we cannot rely on hard links on DOS-like systems)
 
 if ($^O =~ /^(cygwin|dos|MSWin32)$/) {
-    *_subdirs = \&_subdirs_readdir;
+    $_SubDirs = \&_subdirs_readdir;
 } else {
-    *_subdirs = \&_subdirs_stat;
+    $_SubDirs = \&_subdirs_stat;
 }
 
 #
@@ -179,8 +184,8 @@ if ($^O =~ /^(cygwin|dos|MSWin32)$/) {
 sub _check_element ($) {
     my($element) = @_;
 
-    _fatal("invalid element: %s", $element)
-	unless $element =~ m/^(?:$_DirectoryRegexp)\/(?:$_ElementRegexp)$/o;
+    dief("invalid element: %s", $element)
+        unless $element =~ m/^(?:$_DirectoryRegexp)\/(?:$_ElementRegexp)$/o;
 }
 
 #+++############################################################################
@@ -195,49 +200,53 @@ sub _check_element ($) {
 
 sub new : method {
     my($class, %option) = @_;
-    my($self, $name, $path, $options);
+    my($self, $path, $options);
 
     # default object
     $self = __PACKAGE__->SUPER::_new(%option);
-    foreach $name (qw(path umask)) {
-	delete($option{$name});
+    foreach my $name (qw(path umask)) {
+        delete($option{$name});
     }
     # default options
-    $self->{maxelts} = 16_000;    # maximum number of elements allowed per directory
+    $self->{maxelts} = 16_000; # maximum number of elements per directory
     # check maxelts
     if (defined($option{maxelts})) {
-	_fatal("invalid maxelts: %s", $option{maxelts})
-	    unless $option{maxelts} =~ /^\d+$/ and $option{maxelts} > 0;
-	$self->{maxelts} = delete($option{maxelts});
+        dief("invalid maxelts: %s", $option{maxelts})
+            unless $option{maxelts} =~ /^\d+$/ and $option{maxelts} > 0;
+        $self->{maxelts} = delete($option{maxelts});
     }
     # check schema
     if (defined($option{schema})) {
-	_fatal("invalid schema: %s", $option{schema})
-	    unless ref($option{schema}) eq "HASH";
-	foreach $name (keys(%{ $option{schema} })) {
-	    _fatal("invalid schema name: %s", $name)
-		unless $name =~ /^($_FileRegexp)$/ and $name ne LOCKED_DIRECTORY;
-	    _fatal("invalid schema type: %s", $option{schema}{$name})
-		unless $option{schema}{$name} =~ /^(binary|string|table)([\?\*]{0,2})$/;
-	    $self->{type}{$name} = $1;
-	    $options = $2;
-	    $self->{mandatory}{$name} = 1 unless $options =~ /\?/;
-	    $self->{ref}{$name} = 1 if $options =~ /\*/;
-	    _fatal("invalid schema type: %s", $option{schema}{$name})
-		if $self->{type}{$name} eq "table" and $self->{ref}{$name};
-	}
-	_fatal("invalid schema: no mandatory data")
-	    unless $self->{mandatory};
-	delete($option{schema});
+        dief("invalid schema: %s", $option{schema})
+            unless ref($option{schema}) eq "HASH";
+        foreach my $name (keys(%{ $option{schema} })) {
+            dief("invalid schema name: %s", $name)
+                unless $name =~ /^($_FileRegexp)$/
+                   and $name ne LOCKED_DIRECTORY;
+            if ($option{schema}{$name} =~
+                /^(binary|string|table)([\?\*]{0,2})$/) {
+                $self->{type}{$name} = $1;
+                $options = $2;
+            } else {
+                dief("invalid schema type: %s", $option{schema}{$name});
+            }
+            $self->{mandatory}{$name} = 1 unless $options =~ /\?/;
+            $self->{ref}{$name} = 1 if $options =~ /\*/;
+            dief("invalid schema type: %s", $option{schema}{$name})
+                if $self->{type}{$name} eq "table" and $self->{ref}{$name};
+        }
+        dief("invalid schema: no mandatory data")
+            unless $self->{mandatory};
+        delete($option{schema});
     }
     # check unexpected options
-    foreach $name (keys(%option)) {
-	_fatal("unexpected option: %s", $name);
+    foreach my $name (keys(%option)) {
+        dief("unexpected option: %s", $name);
     }
     # create directories
-    foreach $name (TEMPORARY_DIRECTORY, OBSOLETE_DIRECTORY) {
-	$path = $self->{path} . "/" . $name;
-	_special_mkdir($path, $self->{umask}) unless -d $path;
+    foreach my $name (TEMPORARY_DIRECTORY, OBSOLETE_DIRECTORY) {
+        $path = $self->{path} . "/" . $name;
+        _special_mkdir($path, $self->{umask}) unless -d $path;
     }
     # so far so good...
     return($self);
@@ -249,17 +258,17 @@ sub new : method {
 
 sub count : method {
     my($self) = @_;
-    my($count, $name, @list, $subdirs);
+    my($count, @list, $subdirs);
 
     $count = 0;
     # get the list of existing directories
-    foreach $name (_special_getdir($self->{path}, "strict")) {
-	push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
+    foreach my $name (_special_getdir($self->{path}, "strict")) {
+        push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
     }
     # count sub-directories
-    foreach $name (@list) {
-	$subdirs = _subdirs($self->{path} . "/" . $name);
-	$count += $subdirs if $subdirs;
+    foreach my $name (@list) {
+        $subdirs = $_SubDirs->($self->{path} . "/" . $name);
+        $count += $subdirs if $subdirs;
     }
     # that's all
     return($count);
@@ -271,30 +280,7 @@ sub count : method {
 #  - if given a time, only return true on locks older than this time (needed by purge)
 #
 
-# version using nlink (faster)
-
-sub _is_locked_nlink : method {
-    my($self, $name, $time) = @_;
-    my($path, @stat);
-
-    $path = $self->{path} . "/" . $name;
-    @stat = lstat($path);
-    unless (@stat) {
-	_fatal("cannot lstat(%s): %s", $path, $!) unless $! == ENOENT;
-	# RACE: this path does not exist (anymore)
-	return(0);
-    }
-    # locking increases nlink so...
-    return(0) unless $stat[ST_NLINK] > 2;
-    # check age if time is given
-    return(0) if defined($time) and $stat[ST_MTIME] >= $time;
-    # so far so good but we double check that the proper directory does exist
-    return(-d $path . "/" . LOCKED_DIRECTORY);
-}
-
-# version not using nlink (slower)
-
-sub _is_locked_nonlink : method {
+sub _is_locked ($$;$) {
     my($self, $name, $time) = @_;
     my($path, @stat);
 
@@ -303,19 +289,11 @@ sub _is_locked_nonlink : method {
     return(1) unless defined($time);
     @stat = lstat($path);
     unless (@stat) {
-	_fatal("cannot lstat(%s): %s", $path, $!) unless $! == ENOENT;
-	# RACE: this path does not exist (anymore)
-	return(0);
+        dief("cannot lstat(%s): %s", $path, $!) unless $! == ENOENT;
+        # RACE: this path does not exist (anymore)
+        return(0);
     }
     return($stat[ST_MTIME] < $time);
-}
-
-# use the right version (we cannot rely on hard links on DOS-like systems)
-
-if ($^O =~ /^(cygwin|dos|MSWin32)$/) {
-    *_is_locked = \&_is_locked_nonlink;
-} else {
-    *_is_locked = \&_is_locked_nlink;
 }
 
 #
@@ -334,7 +312,7 @@ if ($^O =~ /^(cygwin|dos|MSWin32)$/) {
 #    this will later be used to detect stalled locks
 #
 
-sub lock : method {
+sub lock : method { ## no critic 'ProhibitBuiltinHomonyms'
     my($self, $element, $permissive) = @_;
     my($path, $oldumask, $success);
 
@@ -342,32 +320,32 @@ sub lock : method {
     $permissive = 1 unless defined($permissive);
     $path = $self->{path} . "/" . $element . "/" . LOCKED_DIRECTORY;
     if (defined($self->{umask})) {
-	$oldumask = umask($self->{umask});
-	$success = mkdir($path);
-	umask($oldumask);
+        $oldumask = umask($self->{umask});
+        $success = mkdir($path);
+        umask($oldumask);
     } else {
-	$success = mkdir($path);
+        $success = mkdir($path);
     }
     unless ($success) {
-	if ($permissive) {
-	    # RACE: the locked directory already exists
-	    return(0) if $! == EEXIST;
-	    # RACE: the element directory does not exist anymore
-	    return(0) if $! == ENOENT;
-	}
-	# otherwise this is unexpected...
-	_fatal("cannot mkdir(%s): %s", $path, $!);
+        if ($permissive) {
+            # RACE: the locked directory already exists
+            return(0) if $! == EEXIST;
+            # RACE: the element directory does not exist anymore
+            return(0) if $! == ENOENT;
+        }
+        # otherwise this is unexpected...
+        dief("cannot mkdir(%s): %s", $path, $!);
     }
     $path = $self->{path} . "/" . $element;
     unless (lstat($path)) {
-	if ($permissive and $! == ENOENT) {
-	    # RACE: the element directory does not exist anymore
-	    # (this can happen if an other process locked & removed the element
-	    #  while our mkdir() was in progress... yes, this can happen!)
-	    return(0);
-	}
-	# otherwise this is unexpected...
-	_fatal("cannot lstat(%s): %s", $path, $!);
+        if ($permissive and $! == ENOENT) {
+            # RACE: the element directory does not exist anymore
+            # (this can happen if an other process locked & removed the element
+            #  while our mkdir() was in progress... yes, this can happen!)
+            return(0);
+        }
+        # otherwise this is unexpected...
+        dief("cannot lstat(%s): %s", $path, $!);
     }
     # so far so good
     return(1);
@@ -394,12 +372,12 @@ sub unlock : method {
     _check_element($element);
     $path = $self->{path} . "/" . $element . "/" . LOCKED_DIRECTORY;
     unless (rmdir($path)) {
-	if ($permissive) {
-	    # RACE: the element directory or its lock does not exist anymore
-	    return(0) if $! == ENOENT;
-	}
-	# otherwise this is unexpected...
-	_fatal("cannot rmdir(%s): %s", $path, $!);
+        if ($permissive) {
+            # RACE: the element directory or its lock does not exist anymore
+            return(0) if $! == ENOENT;
+        }
+        # otherwise this is unexpected...
+        dief("cannot rmdir(%s): %s", $path, $!);
     }
     # so far so good
     return(1);
@@ -411,38 +389,43 @@ sub unlock : method {
 
 sub remove : method {
     my($self, $element) = @_;
-    my($temp, $name, $path);
+    my($temp, $path);
 
     _check_element($element);
-    _fatal("cannot remove %s: not locked", $element) unless $self->_is_locked($element);
+    dief("cannot remove %s: not locked", $element)
+        unless _is_locked($self, $element);
     # move the element out of its intermediate directory
     $path = $self->{path} . "/" . $element;
     while (1) {
-	$temp = $self->{path} . "/" . OBSOLETE_DIRECTORY . "/" . _name($self->{rndhex});
-	rename($path, $temp) and last;
-	_fatal("cannot rename(%s, %s): %s", $path, $temp, $!)
-	    unless $! == ENOTEMPTY or $! == EEXIST;
-	# RACE: the target directory was already present...
+        $temp = $self->{path}
+            . "/" . OBSOLETE_DIRECTORY
+            . "/" . _name($self->{rndhex});
+        rename($path, $temp) and last;
+        dief("cannot rename(%s, %s): %s", $path, $temp, $!)
+            unless $! == ENOTEMPTY or $! == EEXIST;
+        # RACE: the target directory was already present...
     }
     # remove the data files
-    foreach $name (_special_getdir($temp, "strict")) {
-	next if $name eq LOCKED_DIRECTORY;
-	_fatal("unexpected file in %s: %s", $temp, $name)
-	    unless $name =~ /^($_FileRegexp)$/o;
-	$path = $temp . "/" . $1; # untaint
-	unlink($path) and next;
-	_fatal("cannot unlink(%s): %s", $path, $!);
+    foreach my $name (_special_getdir($temp, "strict")) {
+        next if $name eq LOCKED_DIRECTORY;
+        if ($name =~ /^($_FileRegexp)$/o) {
+            $path = $temp . "/" . $1; # untaint
+        } else {
+            dief("unexpected file in %s: %s", $temp, $name);
+        }
+        unlink($path) and next;
+        dief("cannot unlink(%s): %s", $path, $!);
     }
     # remove the locked directory
     $path = $temp . "/" . LOCKED_DIRECTORY;
     while (1) {
-	rmdir($path) or _fatal("cannot rmdir(%s): %s", $path, $!);
-	rmdir($temp) and return;
-	_fatal("cannot rmdir(%s): %s", $temp, $!)
-	    unless $! == ENOTEMPTY or $! == EEXIST;
-	# RACE: this can happen if an other process managed to lock this element
-	# while it was being removed (see the comment in the lock() method)
-	# so we try to remove the lock again and again...
+        rmdir($path) or dief("cannot rmdir(%s): %s", $path, $!);
+        rmdir($temp) and return;
+        dief("cannot rmdir(%s): %s", $temp, $!)
+            unless $! == ENOTEMPTY or $! == EEXIST;
+        # RACE: this can happen if an other process managed to lock this element
+        # while it was being removed (see the comment in the lock() method)
+        # so we try to remove the lock again and again...
     }
 }
 
@@ -452,33 +435,34 @@ sub remove : method {
 
 sub get : method {
     my($self, $element) = @_;
-    my(%data, $name, $path, $ref);
+    my(%data, $path, $ref);
 
-    _fatal("unknown schema") unless $self->{type};
+    dief("unknown schema") unless $self->{type};
     _check_element($element);
-    _fatal("cannot get %s: not locked", $element) unless $self->_is_locked($element);
-    foreach $name (keys(%{ $self->{type} })) {
-	$path = "$self->{path}/$element/$name";
-	unless (lstat($path)) {
-	    _fatal("cannot lstat(%s): %s", $path, $!) unless $! == ENOENT;
-	    if ($self->{mandatory}{$name}) {
-		_fatal("missing data file: %s", $path);
-	    } else {
-		next;
-	    }
-	}
-	if ($self->{type}{$name} =~ /^(binary|string)$/) {
-	    if ($self->{type}{$name} eq "string") {
-		$ref = _file_read_utf8($path);
-	    } else {
-		$ref = _file_read_bin($path);
-	    }
-	    $data{$name} = $self->{ref}{$name} ? $ref : $$ref;
-	} elsif ($self->{type}{$name} eq "table") {
-	    $data{$name} = _string2hash(_file_read_utf8($path));
-	} else {
-	    _fatal("unexpected data type: %s", $self->{type}{$name});
-	}
+    dief("cannot get %s: not locked", $element)
+        unless _is_locked($self, $element);
+    foreach my $name (keys(%{ $self->{type} })) {
+        $path = "$self->{path}/$element/$name";
+        unless (lstat($path)) {
+            dief("cannot lstat(%s): %s", $path, $!) unless $! == ENOENT;
+            if ($self->{mandatory}{$name}) {
+                dief("missing data file: %s", $path);
+            } else {
+                next;
+            }
+        }
+        if ($self->{type}{$name} =~ /^(binary|string)$/) {
+            if ($self->{type}{$name} eq "string") {
+                $ref = _file_read_utf8($path);
+            } else {
+                $ref = _file_read_bin($path);
+            }
+            $data{$name} = $self->{ref}{$name} ? $ref : ${ $ref };
+        } elsif ($self->{type}{$name} eq "table") {
+            $data{$name} = _string2hash(_file_read_utf8($path));
+        } else {
+            dief("unexpected data type: %s", $self->{type}{$name});
+        }
     }
     return(\%data) unless wantarray();
     return(%data);
@@ -491,36 +475,83 @@ sub get : method {
 #  - in any case the name will match $_DirectoryRegexp
 #
 
-sub _insertion_directory : method {
+sub _insertion_directory ($) {
     my($self) = @_;
-    my(@list, $name, $subdirs);
+    my(@list, $new, $subdirs);
 
     # get the list of existing directories
-    foreach $name (_special_getdir($self->{path}, "strict")) {
-	push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
+    foreach my $name (_special_getdir($self->{path}, "strict")) {
+        push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
     }
     # handle the case with no directories yet
     unless (@list) {
-	$name = sprintf("%08x", 0);
-	_special_mkdir($self->{path} . "/" . $name, $self->{umask});
-	return($name);
+        $new = sprintf("%08x", 0);
+        _special_mkdir($self->{path} . "/" . $new, $self->{umask});
+        return($new);
     }
     # check the last directory
     @list = sort(@list);
-    $name = pop(@list);
-    $subdirs = _subdirs($self->{path} . "/" . $name);
+    $new = pop(@list);
+    $subdirs = $_SubDirs->($self->{path} . "/" . $new);
     if (defined($subdirs)) {
-	return($name) if $subdirs < $self->{maxelts};
-	# this last directory is now full... create a new one
+        return($new) if $subdirs < $self->{maxelts};
+        # this last directory is now full... create a new one
     } else {
-	# RACE: at this point, the directory does not exist anymore, so it
-	# must have been purged after we listed the directory contents...
-	# we do not try to do more and simply create a new directory
+        # RACE: at this point, the directory does not exist anymore, so it
+        # must have been purged after we listed the directory contents...
+        # we do not try to do more and simply create a new directory
     }
     # we need a new directory
-    $name = sprintf("%08x", hex($name) + 1);
-    _special_mkdir($self->{path} . "/" . $name, $self->{umask});
-    return($name);
+    $new = sprintf("%08x", hex($new) + 1);
+    _special_mkdir($self->{path} . "/" . $new, $self->{umask});
+    return($new);
+}
+
+#
+# add data to a directory
+#
+
+sub _add_data ($$$) {
+    my($self, $data, $temp) = @_;
+    my($ref, $utf8);
+
+    foreach my $name (keys(%{ $data })) {
+        dief("unexpected data: %s", $name) unless $self->{type}{$name};
+        if ($self->{type}{$name} =~ /^(binary|string)$/) {
+            if ($self->{ref}{$name}) {
+                dief("unexpected %s data in %s: %s",
+                     $self->{type}{$name}, $name, $data->{$name})
+                    unless ref($data->{$name}) eq "SCALAR";
+                $ref = $data->{$name};
+            } else {
+                dief("unexpected %s data in %s: %s",
+                     $self->{type}{$name}, $name, $data->{$name})
+                    if ref($data->{$name});
+                $ref = \$data->{$name};
+            }
+            $utf8 = $self->{type}{$name} eq "string";
+        } elsif ($self->{type}{$name} eq "table") {
+            dief("unexpected %s data in %s: %s",
+                 $self->{type}{$name}, $name, $data->{$name})
+                unless ref($data->{$name}) eq "HASH";
+            $ref = _hash2string($data->{$name});
+            $utf8 = 1;
+        } else {
+            dief("unexpected data type in %s: %s",
+                 $name, $self->{type}{$name});
+        }
+        eval {
+            _file_write("$temp/$name", $utf8, $self->{umask}, $ref);
+        };
+        if ($@) {
+            if ($@ =~ /^Wide character in /) {
+                dief("unexpected wide character in %s: %s",
+                     $name, $data->{$name});
+            } else {
+                die($@);
+            }
+        }
+    }
 }
 
 #
@@ -536,64 +567,33 @@ sub _insertion_directory : method {
 
 sub add : method {
     my($self, @data) = @_;
-    my($data, $temp, $dir, $name, $path, $ref, $utf8);
+    my($data, $temp, $dir, $new, $path, $ref, $utf8);
 
-    _fatal("unknown schema") unless $self->{type};
+    dief("unknown schema") unless $self->{type};
     if (@data == 1) {
-	$data = $data[0];
+        $data = $data[0];
     } else {
-	$data = { @data };
+        $data = { @data };
+    }
+    foreach my $name (keys(%{ $self->{mandatory} })) {
+        dief("missing mandatory data: %s", $name)
+            unless defined($data->{$name});
     }
     while (1) {
-	$temp = $self->{path} . "/" . TEMPORARY_DIRECTORY . "/" . _name($self->{rndhex});
-	last if _special_mkdir($temp, $self->{umask});
+        $temp = $self->{path}
+            . "/" . TEMPORARY_DIRECTORY
+            . "/" . _name($self->{rndhex});
+        last if _special_mkdir($temp, $self->{umask});
     }
-    foreach $name (keys(%$data)) {
-	_fatal("unexpected data: %s", $name) unless $self->{type}{$name};
-	if ($self->{type}{$name} =~ /^(binary|string)$/) {
-	    if ($self->{ref}{$name}) {
-		_fatal("unexpected %s data in %s: %s",
-		       $self->{type}{$name}, $name, $data->{$name})
-		    unless ref($data->{$name}) eq "SCALAR";
-		$ref = $data->{$name};
-	    } else {
-		_fatal("unexpected %s data in %s: %s",
-		       $self->{type}{$name}, $name, $data->{$name})
-		    if ref($data->{$name});
-		$ref = \$data->{$name};
-	    }
-	    $utf8 = $self->{type}{$name} eq "string";
-	} elsif ($self->{type}{$name} eq "table") {
-	    _fatal("unexpected %s data in %s: %s", $self->{type}{$name}, $name, $data->{$name})
-		unless ref($data->{$name}) eq "HASH";
-	    $ref = _hash2string($data->{$name});
-	    $utf8 = 1;
-	} else {
-	    _fatal("unexpected data type in %s: %s", $name, $self->{type}{$name});
-	}
-	eval {
-	    _file_write("$temp/$name", $utf8, $self->{umask}, $ref);
-	};
-	if ($@) {
-	    if ($@ =~ /^Wide character in /) {
-		_fatal("unexpected wide character in %s: %s", $name, $data->{$name});
-	    } else {
-		die($@);
-	    }
-	}
-    }
-    foreach $name (keys(%{ $self->{mandatory} })) {
-	_fatal("missing mandatory data: %s", $name)
-	    unless defined($data->{$name});
-    }
-    $dir = $self->_insertion_directory();
+    _add_data($self, $data, $temp);
+    $dir = _insertion_directory($self);
     while (1) {
-	$name = $dir . "/" . _name($self->{rndhex});
-	$path = $self->{path} . "/" . $name;
-	rename($temp, $path) and return($name);
-	_fatal("cannot rename(%s, %s): %s", $temp, $path, $!)
-	    unless $! == ENOTEMPTY or $! == EEXIST;
-	# RACE: the target directory was already present...
+        $new = $dir . "/" . _name($self->{rndhex});
+        $path = $self->{path} . "/" . $new;
+        rename($temp, $path) and return($new);
+        dief("cannot rename(%s, %s): %s", $temp, $path, $!)
+            unless $! == ENOTEMPTY or $! == EEXIST;
+        # RACE: the target directory was already present...
     }
 }
 
@@ -601,19 +601,39 @@ sub add : method {
 # return the list of volatile (i.e. temporary or obsolete) directories
 #
 
-sub _volatile : method {
+sub _volatile ($) {
     my($self) = @_;
-    my(@list, $name);
+    my(@list);
 
-    foreach $name (_special_getdir($self->{path} . "/" . TEMPORARY_DIRECTORY)) {
-	push(@list, TEMPORARY_DIRECTORY . "/" . $1)
-	    if $name =~ /^($_ElementRegexp)$/o; # untaint
+    foreach my $name (_special_getdir($self->{path} .
+                                      "/" . TEMPORARY_DIRECTORY)) {
+        push(@list, TEMPORARY_DIRECTORY . "/" . $1)
+            if $name =~ /^($_ElementRegexp)$/o; # untaint
     }
-    foreach $name (_special_getdir($self->{path} . "/" . OBSOLETE_DIRECTORY)) {
-	push(@list, OBSOLETE_DIRECTORY . "/" . $1)
-	    if $name =~ /^($_ElementRegexp)$/o; # untaint
+    foreach my $name (_special_getdir($self->{path} .
+                                      "/" . OBSOLETE_DIRECTORY)) {
+        push(@list, OBSOLETE_DIRECTORY . "/" . $1)
+            if $name =~ /^($_ElementRegexp)$/o; # untaint
     }
     return(@list);
+}
+
+#
+# destroy a volatile directory
+#
+
+sub _destroy_dir ($) {
+    my($dir) = @_;
+    my($path);
+
+    foreach my $name (_special_getdir($dir)) {
+        next if $name eq LOCKED_DIRECTORY;
+        $path = $dir . "/" . $name;
+        unlink($path) and next;
+        dief("cannot unlink(%s): %s", $path, $!) unless $! == ENOENT;
+    }
+    _special_rmdir($dir . "/" . LOCKED_DIRECTORY);
+    _special_rmdir($dir);
 }
 
 #
@@ -627,61 +647,54 @@ sub _volatile : method {
 
 sub purge : method {
     my($self, %option) = @_;
-    my(@list, $name, $path, $subdirs, $oldtime, $file, $fpath);
+    my(@list, $path, $subdirs, $oldtime, $locked);
 
     # check options
     $option{maxtemp} = 300 unless defined($option{maxtemp});
     $option{maxlock} = 600 unless defined($option{maxlock});
-    foreach $name (keys(%option)) {
-	_fatal("unexpected option: %s", $name)
-	    unless $name =~ /^(maxtemp|maxlock)$/;
-	_fatal("invalid %s: %s", $name, $option{$name})
-	    unless $option{$name} =~ /^\d+$/;
+    foreach my $name (keys(%option)) {
+        dief("unexpected option: %s", $name)
+            unless $name =~ /^(maxtemp|maxlock)$/;
+        dief("invalid %s: %s", $name, $option{$name})
+            unless $option{$name} =~ /^\d+$/;
     }
     # get the list of intermediate directories
     @list = ();
-    foreach $name (_special_getdir($self->{path}, "strict")) {
-	push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
+    foreach my $name (_special_getdir($self->{path}, "strict")) {
+        push(@list, $1) if $name =~ /^($_DirectoryRegexp)$/o; # untaint
     }
-    @list = sort(@list);
-    # try to purge all but last one
+    # try to purge all but the last intermediate directory
     if (@list > 1) {
-	pop(@list);
-	foreach $name (@list) {
-	    $path = $self->{path} . "/" . $name;
-	    $subdirs = _subdirs($path);
-	    next if $subdirs or not defined($subdirs);
-	    _special_rmdir($path);
-	}
+        @list = sort(@list);
+        pop(@list);
+        foreach my $name (@list) {
+            $path = $self->{path} . "/" . $name;
+            $subdirs = $_SubDirs->($path);
+            next if $subdirs or not defined($subdirs);
+            _special_rmdir($path);
+        }
     }
     # remove the volatile directories which are too old
     if ($option{maxtemp}) {
-	$oldtime = time() - $option{maxtemp};
-	foreach $name ($self->_volatile()) {
-	    $path = $self->{path} . "/" . $name;
-	    next unless _older($path, $oldtime);
-	    warn("* removing too old volatile element: $name\n");
-	    foreach $file (_special_getdir($path)) {
-		next if $file eq LOCKED_DIRECTORY;
-		$fpath = "$path/$file";
-		unlink($fpath) and next;
-		_fatal("cannot unlink(%s): %s", $fpath, $!) unless $! == ENOENT;
-	    }
-	    _special_rmdir($path . "/" . LOCKED_DIRECTORY);
-	    _special_rmdir($path);
-	}
+        $oldtime = time() - $option{maxtemp};
+        foreach my $name (_volatile($self)) {
+            $path = $self->{path} . "/" . $name;
+            next unless _older($path, $oldtime);
+            warnf("removing too old volatile element: %s", $name);
+            _destroy_dir($path);
+        }
     }
     # iterate to find abandoned locked entries
     if ($option{maxlock}) {
-	$oldtime = time() - $option{maxlock};
-	$name = $self->first();
-	while ($name) {
-	    next unless $self->_is_locked($name, $oldtime);
-	    warn("* removing too old locked element: $name\n");
-	    $self->unlock($name, 1);
-	} continue {
-	    $name = $self->next();
-	}
+        $oldtime = time() - $option{maxlock};
+        $locked = $self->first();
+        while ($locked) {
+            next unless _is_locked($self, $locked, $oldtime);
+            warnf("removing too old locked element: %s", $locked);
+            $self->unlock($locked, 1);
+        } continue {
+            $locked = $self->next();
+        }
     }
 }
 
