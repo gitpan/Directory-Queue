@@ -13,15 +13,16 @@
 package Directory::Queue::Simple;
 use strict;
 use warnings;
-our $VERSION  = "1.7";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.14 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.7_1";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.16 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
 #
 
-use Directory::Queue qw(_name SYSBUFSIZE ST_MTIME /Regexp/ /file/ /special/);
+use Directory::Queue qw(_name SYSBUFSIZE /Regexp/ /file/ /special/);
 use No::Worries::Die qw(dief);
+use No::Worries::Stat qw(ST_MTIME);
 use No::Worries::Warn qw(warnf);
 use POSIX qw(:errno_h);
 
@@ -389,6 +390,12 @@ following attributes are supported:
 
 the queue toplevel directory (mandatory)
 
+=item rndhex
+
+the "random" hexadecimal digit to use in element names (aka I<R>) as a
+number between 0 and 15
+(default: randomly generated)
+
 =item umask
 
 the umask to use when creating files and directories
@@ -550,7 +557,7 @@ represents the microsecond part of the time since the Epoch
 
 =item I<R>
 
-is a random digit used to reduce name collisions
+is a random hexadecimal digit used to reduce name collisions
 
 =back
 
@@ -568,4 +575,4 @@ L<Directory::Queue>.
 
 Lionel Cons L<http://cern.ch/lionel.cons>
 
-Copyright CERN 2011-2012
+Copyright (C) CERN 2010-2013

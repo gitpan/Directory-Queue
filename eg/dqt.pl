@@ -7,7 +7,7 @@
 #                                                                              #
 #-##############################################################################
 
-# $Id: dqt.perl,v 1.24 2012/11/08 14:26:15 c0ns Exp $
+# $Id: dqt.perl,v 1.26 2013/04/24 07:53:11 c0ns Exp $
 
 #
 # used modules
@@ -39,7 +39,7 @@ sub dirq ($) {
     my(%newopt, $umask);
 
     $newopt{path} = $Option{path};
-    if ($schema and not $Option{simple}) {
+    if ($schema and $Option{type} eq "normal") {
         $newopt{schema} = {
             body   => $Option{string} ? "string" : "binary",
             header => "table?",
@@ -51,7 +51,7 @@ sub dirq ($) {
     $umask = $Option{umask};
     $umask = oct($umask) if defined($umask) and $umask =~ /^0/;
     $newopt{umask} = $umask if defined($umask);
-    $newopt{type} = $Option{simple} ? "Simple" : "Normal";
+    $newopt{type} = ucfirst($Option{type});
     return(Directory::Queue->new(%newopt));
 }
 
@@ -167,7 +167,7 @@ sub test_get () {
     for ($name = $dirq->first(); $name; $name = $dirq->next()) {
         $dirq->lock($name) or next;
         if ($Option{reference}) {
-            if ($Option{simple}) {
+            if ($Option{type} eq "simple") {
                 $dirq->get_ref($name);
             } else {
                 $tmp = $dirq->get($name);
@@ -236,20 +236,20 @@ sub test_add () {
     while (not $Option{count} or $count < $Option{count}) {
         if ($Option{size}) {
             $ref = $Option{random} ? rndstr($Option{size}, 1) : $strref;
-        } elsif ($Option{string} and not $Option{simple}) {
+        } elsif ($Option{string} and $Option{type} eq "normal") {
             $ref = \ "\xc9l\xe9ment $count \x{263A}\n";
         } else {
             $ref = \ "Element $count ;-)\n";
         }
         if ($Option{reference}) {
-            if ($Option{simple}) {
+            if ($Option{type} eq "simple") {
                 $name = $dirq->add_ref($ref);
             } else {
                 $addopt{body} = $ref;
                 $name = $dirq->add(\%addopt);
             }
         } else {
-            if ($Option{simple}) {
+            if ($Option{type} eq "simple") {
                 $name = $dirq->add(${ $ref });
             } else {
                 $addopt{body} = ${ $ref };
@@ -265,7 +265,7 @@ sub test_add () {
 # simple test (only on non-existing path!)
 #
 # this can be used for benchmarking:
-#  $ perl -d:DProf dqt.perl -d -p /new/path -c 10000 -header simple
+#  $ perl -d:DProf dqt.perl -d -p /new/path -c 10000 simple
 #  $ dprofpp -u
 #
 
@@ -279,7 +279,7 @@ sub test_simple () {
     }
     @list = dir_read($Option{path});
     dief("unexpected subdirs: %s", "@list")
-        unless @list == ($Option{simple} ? 1 : 3);
+        unless @list == ($Option{type} eq "simple" ? 1 : 3);
     foreach my $name (map("$Option{path}/$_", @list), $Option{path}) {
         rmdir($name) or dief("cannot rmdir(%s): %s", $name, $!);
     }
@@ -307,25 +307,26 @@ sub test () {
 sub init () {
     $| = 1;
     $Option{debug} = 0;
+    $Option{type} = "simple";
     Getopt::Long::Configure(qw(posix_default no_ignore_case));
     GetOptions(\%Option,
         "count|c=i",
         "debug|d+",
+        "granularity=i",
         "header",
         "help|h|?",
         "list|l",
         "manual|m",
-        "granularity=i",
         "maxelts=i",
         "maxlock=i",
         "maxtemp=i",
         "path|p=s",
         "random",
         "reference",
-        "simple",
         "size=i",
         "sleep=f",
         "string",
+        "type=s",
         "umask=s",
     ) or pod2usage(2);
     pod2usage(1) if $Option{help};
@@ -343,6 +344,8 @@ sub init () {
         printf("Available tests: %s\n", join(" ", sort(keys(%Test))));
         exit(0);
     }
+    dief("unsupported type: %s", $Option{type})
+        unless $Option{type} =~ /^(normal|simple)$/;
     pod2usage(2) unless @ARGV == 1;
     log_filter("debug") if $Option{debug};
     dief("missing option: --path\n")
@@ -355,3 +358,25 @@ sub init () {
 
 init();
 test();
+
+__END__
+
+=head1 NAME
+
+dqt.perl - Directory::Queue test program
+
+=head1 SYNOPSIS
+
+B<dqt.perl> [I<OPTIONS>] [I<NAME>]
+
+=head1 DESCRIPTION
+
+This program exercises the Directory::Queue modules by adding, removing,
+etc. elements in a directory queue. Read the source code if you want to know
+more...
+
+=head1 AUTHOR
+
+Lionel Cons L<http://cern.ch/lionel.cons>
+
+Copyright (C) CERN 2010-2013

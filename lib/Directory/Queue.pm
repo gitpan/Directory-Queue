@@ -13,8 +13,8 @@
 package Directory::Queue;
 use strict;
 use warnings;
-our $VERSION  = "1.7";
-our $REVISION = sprintf("%d.%02d", q$Revision: 1.44 $ =~ /(\d+)\.(\d+)/);
+our $VERSION  = "1.7_1";
+our $REVISION = sprintf("%d.%02d", q$Revision: 1.49 $ =~ /(\d+)\.(\d+)/);
 
 #
 # used modules
@@ -22,6 +22,7 @@ our $REVISION = sprintf("%d.%02d", q$Revision: 1.44 $ =~ /(\d+)\.(\d+)/);
 
 use No::Worries::Die qw(dief);
 use No::Worries::Export qw(export_control);
+use No::Worries::Stat qw(ST_DEV ST_INO ST_NLINK ST_SIZE ST_MTIME);
 use POSIX qw(:errno_h :fcntl_h);
 use Time::HiRes qw();
 
@@ -38,16 +39,6 @@ our(
 # Constants                                                                    #
 #                                                                              #
 #---############################################################################
-
-#
-# interesting stat(2) fields
-#
-
-use constant ST_DEV   => 0;  # device
-use constant ST_INO   => 1;  # inode
-use constant ST_NLINK => 3;  # number of hard links
-use constant ST_SIZE  => 7;  # size in bytes
-use constant ST_MTIME => 9;  # time of last modification
 
 #
 # reasonable buffer size for file I/O operations
@@ -296,7 +287,7 @@ sub new : method {
     my($class, %option) = @_;
     my($subclass);
 
-    $option{"type"} ||= "Normal";
+    $option{"type"} ||= "Simple";
     $subclass = $class . "::" . $option{"type"};
     _require($subclass);
     delete($option{"type"});
@@ -456,7 +447,7 @@ sub import : method {
 
     $pkg = shift(@_);
     foreach my $name (
-        qw(SYSBUFSIZE ST_MTIME ST_NLINK _name $_DirectoryRegexp $_ElementRegexp
+        qw(SYSBUFSIZE _name $_DirectoryRegexp $_ElementRegexp
            _file_create _file_read_bin _file_read_utf8 _file_write
            _special_getdir _special_mkdir _special_rmdir)) {
         $exported{$name}++;
@@ -505,10 +496,11 @@ The goal of this module is to offer a queue system using the underlying
 filesystem for storage, security and to prevent race conditions via atomic
 operations. It focuses on simplicity, robustness and scalability.
 
-This module allows multiple concurrent readers and writers to interact
-with the same queue. A Python implementation of the same algorithms is
-available at http://pypi.python.org/pypi/dirq/ so readers and writers
-can be written in different programming languages.
+This module allows multiple concurrent readers and writers to interact with
+the same queue. A Python implementation of the same algorithm is available
+at L<https://github.com/cern-mig/python-dirq> and a Java implementation at
+L<https://github.com/cern-mig/java-dirq> so readers and writers can be
+written in different programming languages.
 
 There is no knowledge of priority within a queue. If multiple priorities
 are needed, multiple queues should be used.
@@ -643,7 +635,7 @@ locked.
 The new() method of this module can be used to create a Directory::Queue
 object that will later be used to interact with the queue. It can have a
 C<type> attribute specifying the queue type to use. If not specified, the
-type defaults to C<Normal>.
+type defaults to C<Simple>.
 
 This method is however only a wrapper around the constructor of the
 underlying module implementing the functionality. So:
@@ -730,4 +722,4 @@ L<Directory::Queue::Simple>.
 
 Lionel Cons L<http://cern.ch/lionel.cons>
 
-Copyright CERN 2010-2012
+Copyright (C) CERN 2010-2013

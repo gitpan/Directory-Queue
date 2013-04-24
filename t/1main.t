@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 use Encode;
-use Directory::Queue;
+use Directory::Queue::Normal;
 use Test::More tests => 45;
 use File::Temp qw(tempdir);
 use POSIX qw(:errno_h :fcntl_h);
@@ -45,7 +45,7 @@ $tmpdir = tempdir(CLEANUP => 1);
 @list = dirlist($tmpdir);
 is(scalar(@list), 0, "empty directory");
 
-$dq = Directory::Queue->new(path => $tmpdir, schema => { string => "string" });
+$dq = Directory::Queue::Normal->new(path => $tmpdir, schema => { string => "string" });
 @list = sort(dirlist($tmpdir));
 is("@list", "obsolete temporary", "empty queue");
 
@@ -85,12 +85,12 @@ eval { $dq->remove($elt) };
 is($@, "", "remove 3");
 is($dq->count(), 0, "count 0");
 
-$dq = Directory::Queue->new(path => $tmpdir, schema => { string => "binary" });
+$dq = Directory::Queue::Normal->new(path => $tmpdir, schema => { string => "binary" });
 $elt = $dq->add(string => STR_ISO);
 is(contents("$tmpdir/$elt/string"), STR_ISO, "ISO-8859-1 binary");
 
 $tmp = "foobar";
-$dq = Directory::Queue->new(path => $tmpdir, schema => { string => "binary*" });
+$dq = Directory::Queue::Normal->new(path => $tmpdir, schema => { string => "binary*" });
 eval { $elt = $dq->add(string => $tmp) };
 ok($@ =~ /unexpected/, "add by reference 1");
 eval { $elt = $dq->add(string => \$tmp) };
@@ -98,7 +98,7 @@ is($@, "", "add by reference 2");
 is(contents("$tmpdir/$elt/string"), $tmp, "binary by reference");
 
 $tmp = $dq->count();
-$dq = Directory::Queue->new(path => $tmpdir, schema => { string => "binary" }, maxelts => $tmp);
+$dq = Directory::Queue::Normal->new(path => $tmpdir, schema => { string => "binary" }, maxelts => $tmp);
 @list = sort(dirlist($tmpdir));
 is("@list", "00000000 obsolete temporary", "subdirs 1");
 $elt = $dq->add(string => $tmp);
@@ -127,7 +127,7 @@ $elt = $dq->next();
 ok($dq->lock($elt), "purge 2");
 is($dq->count(), 3, "purge 3");
 
-$dq = Directory::Queue->new(path => $tmpdir, schema => { string => "binary", optional => "string?" });
+$dq = Directory::Queue::Normal->new(path => $tmpdir, schema => { string => "binary", optional => "string?" });
 $tmp = "add by hash";
 ok($dq->add(string => $tmp), "$tmp 1");
 ok($dq->add(string => $tmp, optional => "yes"), "$tmp 2");
@@ -146,7 +146,7 @@ eval { $tmp = $dq->get($elt) };
 is($@, "", "get by hash ref 1");
 is(ref($tmp), "HASH", "get by hash ref 2");
 
-$dq = Directory::Queue->new(path => $tmpdir);
+$dq = Directory::Queue::Normal->new(path => $tmpdir);
 $tmp = 0;
 for ($elt = $dq->first(); $elt; $elt = $dq->next()) {
     $tmp++;

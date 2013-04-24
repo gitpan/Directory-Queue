@@ -17,14 +17,14 @@ our($tmpdir, $dq);
 
 $tmpdir = tempdir(CLEANUP => 1);
 
-$dq = Directory::Queue->new(path => $tmpdir, schema => { string => "string" });
-test($dq, "Normal");
-
-$dq = Directory::Queue->new(type => "Normal", path => $tmpdir, schema => { string => "string" });
-test($dq, "Normal");
+$dq = Directory::Queue->new(path => $tmpdir);
+test($dq, "Simple");
 
 $dq = Directory::Queue->new(type => "Simple", path => $tmpdir);
 test($dq, "Simple");
+
+$dq = Directory::Queue->new(type => "Normal", path => $tmpdir, schema => { string => "string" });
+test($dq, "Normal");
 
 $dq = Directory::Queue->new(type => "Null");
 test($dq, "Null");

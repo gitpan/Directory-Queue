@@ -2,7 +2,7 @@
 
 use strict;
 use warnings;
-use Directory::Queue;
+use Directory::Queue::Normal;
 use Test::More tests => 128;
 use File::Temp qw(tempdir);
 
@@ -53,7 +53,7 @@ sub check_data ($$$) {
 our($tmpdir, $dq);
 
 $tmpdir = tempdir(CLEANUP => 1);
-$dq = Directory::Queue->new(path => $tmpdir, schema => { table => "table" });
+$dq = Directory::Queue::Normal->new(path => $tmpdir, schema => { table => "table" });
 check_data({}, $dq, "empty");
 check_data({"" => "", "abc" => "", " " => "def"}, $dq, "zero");
 check_data({foo => 1, bar => 2}, $dq, "normal");

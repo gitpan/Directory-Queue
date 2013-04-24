@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:               Directory-Queue
-version:            1.7
+version:            1.7_1
 abstract:           object oriented interface to a directory based queue
 author:
     - Lionel Cons <lionel.cons@cern.ch>
@@ -13,7 +13,7 @@ build_requires:
 requires:
     Encode:       0
     File::Temp:   0
-    No::Worries:  0.7
+    No::Worries:  0.9
     POSIX:        0
     Test::More:   0
     Time::HiRes:  0

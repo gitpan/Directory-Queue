@@ -1,5 +1,11 @@
 Revision history for Directory-Queue:
 
+1.7_1	Wed Apr 24 2013 (developer version)
+	* Added link to the Java implementation, changed the Python link.
+	* Now using No::Worries::Stat instead of hard-coded constants.
+	* Documented the rndhex attribute of the constructors.
+	* Directory::Queue::Simple is now the default when creating queues.
+
 1.7	Tue Nov 13 2012
 	* Now using No::Worries.
 	* Cleanup code to please Perl::Critic.

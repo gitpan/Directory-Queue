@@ -3,6 +3,7 @@
 use strict;
 use warnings;
 use Directory::Queue;
+use Directory::Queue::Normal;
 use Directory::Queue::Set;
 use Directory::Queue::Simple;
 use Test::More tests => 11;
@@ -13,7 +14,7 @@ our($tmpdir, $dq1, $dq2, $elt1, $elt2, $dqs, $dq, $elt, @list);
 $tmpdir = tempdir(CLEANUP => 1);
 #diag("Using temporary directory $tmpdir");
 
-$dq1 = Directory::Queue->new(path => "$tmpdir/1", "schema" => { string => "string" });
+$dq1 = Directory::Queue::Normal->new(path => "$tmpdir/1", "schema" => { string => "string" });
 $dq2 = Directory::Queue::Simple->new(path => "$tmpdir/2");
 isnt($dq1->path(), $dq2->path(), "path");
 isnt($dq1->id(), $dq2->id(), "id");

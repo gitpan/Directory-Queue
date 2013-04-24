@@ -1,14 +1,14 @@
 Directory-Queue
 
-The goal of this module is to offer a simple queue system using the
-underlying filesystem for storage, security and to prevent race
-conditions via atomic operations. It focuses on simplicity, robustness
-and scalability.
+The goal of this module is to offer a queue system using the underlying
+filesystem for storage, security and to prevent race conditions via atomic
+operations. It focuses on simplicity, robustness and scalability.
 
-This module allows multiple concurrent readers and writers to interact
-with the same queue. A Python implementation of the same algorithm is
-available at http://pypi.python.org/pypi/dirq/ so readers and writers
-can be written in different programming languages.
+This module allows multiple concurrent readers and writers to interact with
+the same queue. A Python implementation of the same algorithm is available
+at https://github.com/cern-mig/python-dirq and a Java implementation at
+https://github.com/cern-mig/java-dirq so readers and writers can be
+written in different programming languages.
 
 INSTALLATION
 
@@ -32,7 +32,7 @@ perldoc command.
 
 LICENSE AND COPYRIGHT
 
-Copyright (C) 2010-2012 CERN
+Copyright (C) CERN 2010-2013
 
 This program is free software; you can redistribute it and/or modify it
 under the terms of either: the GNU General Public License as published
