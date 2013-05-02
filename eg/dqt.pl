@@ -7,7 +7,7 @@
 #                                                                              #
 #-##############################################################################
 
-# $Id: dqt.perl,v 1.26 2013/04/24 07:53:11 c0ns Exp $
+# $Id: dqt.perl,v 1.27 2013/04/24 08:05:25 c0ns Exp $
 
 #
 # used modules
@@ -48,6 +48,7 @@ sub dirq ($) {
     }
     $newopt{granularity} = $Option{granularity} if $Option{granularity};
     $newopt{maxelts} = $Option{maxelts} if $Option{maxelts};
+    $newopt{rndhex} = $Option{rndhex} if defined($Option{rndhex});
     $umask = $Option{umask};
     $umask = oct($umask) if defined($umask) and $umask =~ /^0/;
     $newopt{umask} = $umask if defined($umask);
@@ -323,6 +324,7 @@ sub init () {
         "path|p=s",
         "random",
         "reference",
+        "rndhex=i",
         "size=i",
         "sleep=f",
         "string",

@@ -40,7 +40,7 @@ for (($dq, $elt) = $dqs->first(); $dq; ($dq, $elt) = $dqs->next()) {
 is(scalar(@list), 4, "iter");
 
 @list = grep($_ eq $elt1 || $_ eq $elt2, @list);
-if ($elt1 lt $elt2) {
+if (substr($elt1, -14) lt substr($elt2, -14)) {
     ok(" @list " =~ / $elt1 $elt2 /, "order");
 } else {
     ok(" @list " =~ / $elt2 $elt1 /, "order");
